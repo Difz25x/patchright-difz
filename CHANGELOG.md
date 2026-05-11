@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-05-11
+
+- Fixed headless Chrome data extraction by replacing the default `HeadlessChrome` user agent before the first page request.
+- Applied the headless user-agent fix to `launchPersistentContext`, `browser.newContext`, and `browser.newPage`.
+- Improved Turnstile candidate detection inside closed shadow roots.
+- Reworked fallback clicking to use Patchright locators instead of page-side DOM scans.
+- Added shadow-host traversal when walking from hidden challenge inputs to clickable parents.
+- Changed `npm run publish` into a GitHub release flow that pushes the version tag and lets GitHub Actions publish to npm.
+
 ## 0.2.0 - 2026-05-11
 
 - Fixed Patchright data extraction by defaulting evaluate helpers to the page main world.

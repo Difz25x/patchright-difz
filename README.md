@@ -27,6 +27,15 @@ Playwright-style data extraction working with Patchright. If you need
 Patchright's isolated world for a specific call, pass `true` as the
 `isolatedContext` argument.
 
+The Turnstile helper uses Patchright locators for fallback detection, so it can
+also pick up challenge candidates rendered inside closed shadow roots.
+
+When `headless: true` is used without a custom `userAgent`, the wrapper sets a
+normal Chrome user agent before the first request. This applies to
+`launchPersistentContext`, `browser.newContext`, and `browser.newPage`. Set
+`PATCHRIGHT_DIFZ_HEADLESS_USER_AGENT=0` to keep Patchright's default headless
+user agent, or set it to a full user-agent string to override the default.
+
 You can also configure it:
 
 ```ts
@@ -74,3 +83,12 @@ npm install patchright@npm:patchright-difz
 ```
 
 For library publishing, prefer documenting `import { chromium } from "patchright-difz"` because it is clearer and avoids dependency confusion.
+
+## Publish
+
+```bash
+npm run publish
+```
+
+The command builds, creates a `v<version>` git tag, pushes to GitHub, and lets
+the GitHub Actions workflow publish to npm through Trusted Publishing.

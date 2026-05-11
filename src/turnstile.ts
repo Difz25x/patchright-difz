@@ -12,13 +12,6 @@ type BoundingBox = {
   height: number;
 };
 
-type Coordinate = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
-
 export type TurnstileOption = boolean | TurnstileAutoOptions;
 
 export type TurnstileAutoOptions = {
@@ -47,6 +40,8 @@ const DEFAULT_TURNSTILE_SELECTORS = [
   "[data-cf-turnstile-response]",
 ];
 
+const FALLBACK_SELECTORS = ["iframe", "div", "button", '[role="checkbox"]'];
+const FALLBACK_LIMIT = 80;
 const attachedPages = new WeakSet<Page>();
 
 function normalizeOptions(
@@ -65,7 +60,7 @@ function normalizeOptions(
 }
 
 function getClickPoint(box: BoundingBox): { x: number; y: number } {
-  const xOffset = box.width > 60 ? 30 : box.width / 2;
+  const xOffset = box.width > 80 ? 30 : box.width / 2;
 
   return {
     x: box.x + xOffset,
@@ -80,6 +75,10 @@ async function clickBox(page: Page, box: BoundingBox): Promise<boolean> {
   await page.mouse.click(point.x, point.y);
 
   return true;
+}
+
+function looksLikeTurnstileBox(box: BoundingBox): boolean {
+  return box.width >= 260 && box.width <= 340 && box.height >= 35 && box.height <= 90;
 }
 
 async function clickLocatorBox(page: Page, locator: Locator): Promise<boolean> {
@@ -99,12 +98,19 @@ async function clickElementOrParentBox(
   for (let depth = 0; depth < 8 && current; depth++) {
     const box = await current.boundingBox().catch(() => null);
 
-    if (box && (await clickBox(page, box))) {
+    if (box && looksLikeTurnstileBox(box) && (await clickBox(page, box))) {
       return true;
     }
 
     const parentHandle = await current
-      .evaluateHandle((el) => el.parentElement)
+      .evaluateHandle((el) => {
+        const root = el.getRootNode();
+
+        if (el.parentElement) return el.parentElement;
+        if (root instanceof ShadowRoot) return root.host;
+
+        return null;
+      })
       .catch(() => null);
 
     current = parentHandle?.asElement() as ElementHandle<Element> | null;
@@ -145,81 +151,37 @@ async function clickTurnstileLocators(
   return false;
 }
 
-async function clickTurnstileHeuristic(page: Page): Promise<boolean> {
-  const elements: ElementHandle<Element>[] = await page.$$(
-    '[name="cf-turnstile-response"]',
-  );
+async function clickTurnstileFallback(page: Page): Promise<boolean> {
+  const candidates: BoundingBox[] = [];
 
-  if (elements.length > 0) {
-    for (const element of elements) {
-      if (await clickElementOrParentBox(page, element).catch(() => false)) {
-        return true;
+  for (const selector of FALLBACK_SELECTORS) {
+    const locator = page.locator(selector);
+    const count = Math.min(
+      await locator.count().catch(() => 0),
+      FALLBACK_LIMIT,
+    );
+
+    for (let index = 0; index < count; index++) {
+      const box = await locator
+        .nth(index)
+        .boundingBox({ timeout: 250 })
+        .catch(() => null);
+
+      if (box && looksLikeTurnstileBox(box)) {
+        candidates.push(box);
       }
     }
-
-    return false;
   }
 
-  const coordinates: Coordinate[] = await page.evaluate(() => {
-    const coords: Coordinate[] = [];
+  candidates.sort((left, right) => {
+    const leftScore = Math.abs(left.width - 300) + Math.abs(left.height - 65);
+    const rightScore = Math.abs(right.width - 300) + Math.abs(right.height - 65);
 
-    document.querySelectorAll("div").forEach((item) => {
-      try {
-        const el = item as HTMLDivElement;
-        const rect = el.getBoundingClientRect();
-        const css = window.getComputedStyle(el);
-
-        if (
-          css.margin === "0px" &&
-          css.padding === "0px" &&
-          rect.width > 290 &&
-          rect.width <= 310 &&
-          !el.querySelector("*")
-        ) {
-          coords.push({
-            x: rect.x,
-            y: rect.y,
-            w: rect.width,
-            h: rect.height,
-          });
-        }
-      } catch (_err) {}
-    });
-
-    if (coords.length <= 0) {
-      document.querySelectorAll("div").forEach((item) => {
-        try {
-          const el = item as HTMLDivElement;
-          const rect = el.getBoundingClientRect();
-
-          if (
-            rect.width > 290 &&
-            rect.width <= 310 &&
-            !el.querySelector("*")
-          ) {
-            coords.push({
-              x: rect.x,
-              y: rect.y,
-              w: rect.width,
-              h: rect.height,
-            });
-          }
-        } catch (_err) {}
-      });
-    }
-
-    return coords;
+    return leftScore - rightScore;
   });
 
-  for (const item of coordinates) {
-    const clicked = await clickBox(page, {
-      x: item.x,
-      y: item.y,
-      width: item.w,
-      height: item.h,
-    }).catch(() => false);
-
-    if (clicked) return true;
+  for (const box of candidates) {
+    if (await clickBox(page, box).catch(() => false)) return true;
   }
 
   return false;
@@ -245,7 +207,7 @@ export async function checkTurnstile({
         return true;
       }
 
-      if (await clickTurnstileHeuristic(page)) {
+      if (await clickTurnstileFallback(page)) {
         return true;
       }
     } catch (_err) {}
@@ -315,4 +277,3 @@ export function installTurnstileAutoSolver(
     context.off("page", attachPage);
   };
 }
-

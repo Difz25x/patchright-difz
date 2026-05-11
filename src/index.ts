@@ -5,6 +5,11 @@ import type {
   BrowserType,
   chromium as ChromiumBrowserType,
 } from "patchright";
+import {
+  getHeadlessUserAgent,
+  withDefaultUserAgent,
+  withHeadlessUserAgent,
+} from "./headless.js";
 import { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 import { installTurnstileAutoSolver } from "./turnstile.js";
 import type { TurnstileOption } from "./turnstile.js";
@@ -12,6 +17,7 @@ import type { TurnstileOption } from "./turnstile.js";
 installMainWorldEvaluateDefaults();
 
 export * from "patchright";
+export { getHeadlessUserAgent } from "./headless.js";
 export { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 export {
   checkTurnstile,
@@ -28,15 +34,17 @@ type LaunchPersistentContextOptions = Parameters<
   typeof patchright.chromium.launchPersistentContext
 >[1];
 type BrowserNewContextOptions = Parameters<Browser["newContext"]>[0];
+type BrowserNewPageOptions = Parameters<Browser["newPage"]>[0];
 
 type WithTurnstile<T> = T & {
   turnstile?: TurnstileOption;
 };
 
-type BrowserWithTurnstile = Omit<Browser, "newContext"> & {
+type BrowserWithTurnstile = Omit<Browser, "newContext" | "newPage"> & {
   newContext(
     options?: WithTurnstile<BrowserNewContextOptions>,
   ): Promise<BrowserContext>;
+  newPage(options?: WithTurnstile<BrowserNewPageOptions>): ReturnType<Browser["newPage"]>;
 };
 
 type ChromiumWithTurnstile = Omit<
@@ -74,6 +82,7 @@ function splitTurnstileOption<T extends object | undefined>(
 function wrapBrowser(
   browser: Browser,
   defaultTurnstile?: TurnstileOption,
+  defaultUserAgent?: string,
 ): BrowserWithTurnstile {
   return new Proxy(browser, {
     get(target, property, receiver) {
@@ -81,7 +90,11 @@ function wrapBrowser(
         return async (options?: WithTurnstile<BrowserNewContextOptions>) => {
           const { patchrightOptions, turnstile } =
             splitTurnstileOption(options);
-          const context = await target.newContext(patchrightOptions);
+          const contextOptions = withDefaultUserAgent(
+            patchrightOptions,
+            defaultUserAgent,
+          );
+          const context = await target.newContext(contextOptions);
           const turnstileOption = turnstile ?? defaultTurnstile;
 
           if (turnstileOption) {
@@ -89,6 +102,25 @@ function wrapBrowser(
           }
 
           return context;
+        };
+      }
+
+      if (property === "newPage") {
+        return async (options?: WithTurnstile<BrowserNewPageOptions>) => {
+          const { patchrightOptions, turnstile } =
+            splitTurnstileOption(options);
+          const pageOptions = withDefaultUserAgent(
+            patchrightOptions,
+            defaultUserAgent,
+          );
+          const page = await target.newPage(pageOptions);
+          const turnstileOption = turnstile ?? defaultTurnstile;
+
+          if (turnstileOption) {
+            installTurnstileAutoSolver(page.context(), turnstileOption);
+          }
+
+          return page;
         };
       }
 
@@ -110,9 +142,10 @@ function wrapChromium(
         ) => {
           const { patchrightOptions, turnstile } =
             splitTurnstileOption(options);
+          const contextOptions = withHeadlessUserAgent(patchrightOptions);
           const context = await target.launchPersistentContext(
             userDataDir,
-            patchrightOptions,
+            contextOptions,
           );
 
           if (turnstile) {
@@ -127,9 +160,13 @@ function wrapChromium(
         return async (options?: WithTurnstile<LaunchOptions>) => {
           const { patchrightOptions, turnstile } =
             splitTurnstileOption(options);
+          const defaultUserAgent =
+            patchrightOptions?.headless === false
+              ? undefined
+              : getHeadlessUserAgent(patchrightOptions);
           const browser = await target.launch(patchrightOptions);
 
-          return wrapBrowser(browser, turnstile);
+          return wrapBrowser(browser, turnstile, defaultUserAgent);
         };
       }
 
