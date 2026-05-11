@@ -67,6 +67,45 @@ await page.goto("https://example.com");
 await checkTurnstile({ page });
 ```
 
+Turnstile and Cloudflare data helpers:
+
+```ts
+import {
+  getCloudflareData,
+  hasTurnstile,
+  isTurnstileSolved,
+} from "patchright-difz";
+
+const exists = await hasTurnstile({ page });
+const solved = await isTurnstileSolved({ page });
+const data = await getCloudflareData({ page });
+
+console.log({
+  exists,
+  solved,
+  cookies: data.cloudflareCookies,
+  clearance: data.clearanceCookie,
+  cleared: data.challenge.cleared,
+  documentCookieNames: data.documentCookieNames,
+  tokens: data.turnstile.tokens,
+  sitekeys: data.turnstile.sitekeys,
+  responses: data.turnstile.responses,
+});
+```
+
+`getCloudflareData` reads the current browser context cookies plus visible page
+data such as Turnstile response fields, widget `sitekey` values, Cloudflare
+iframe/script URLs, challenge fields, Ray IDs, and Cloudflare-related
+local/session storage keys. Pass `context` and `urls` when you only want cookie
+data for specific URLs:
+
+```ts
+const data = await getCloudflareData({
+  context,
+  urls: ["https://example.com"],
+});
+```
+
 ## Importing as `patchright`
 
 Package name `patchright-difz` normally imports as `patchright-difz`.

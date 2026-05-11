@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 - 2026-05-12
+
+- Added `hasTurnstile` to detect whether a page currently contains Turnstile candidates.
+- Added `isTurnstileSolved` to check for populated Turnstile response/token fields.
+- Added `getCloudflareData` to collect Cloudflare cookies, clearance cookie,
+  Turnstile responses/tokens, sitekeys, widget metadata, challenge fields,
+  Ray IDs, and Cloudflare-related storage data.
+
 ## 0.3.0 - 2026-05-11
 
 - Fixed headless Chrome data extraction by replacing the default `HeadlessChrome` user agent before the first page request.

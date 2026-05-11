@@ -21,12 +21,24 @@ export { getHeadlessUserAgent } from "./headless.js";
 export { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 export {
   checkTurnstile,
+  getCloudflareData,
+  hasTurnstile,
   installTurnstileAutoSolver,
+  isTurnstileSolved,
 } from "./turnstile.js";
 export type {
   CheckTurnstileOptions,
+  CloudflareCookie,
+  CloudflareData,
+  CloudflareDataOptions,
+  CloudflareFieldData,
+  CloudflareStorageEntry,
+  HasTurnstileOptions,
+  IsTurnstileSolvedOptions,
+  TurnstileResponseData,
   TurnstileAutoOptions,
   TurnstileOption,
+  TurnstileWidgetData,
 } from "./turnstile.js";
 
 type LaunchOptions = Parameters<typeof patchright.chromium.launch>[0];

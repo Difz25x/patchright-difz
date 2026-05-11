@@ -29,6 +29,90 @@ export type CheckTurnstileOptions = {
   maxCandidatesPerSelector?: number;
 };
 
+export type HasTurnstileOptions = {
+  page: Page;
+  selectors?: string[];
+  maxCandidatesPerSelector?: number;
+  includeFallback?: boolean;
+};
+
+export type IsTurnstileSolvedOptions = {
+  page: Page;
+  minTokenLength?: number;
+};
+
+export type CloudflareDataOptions = {
+  page?: Page;
+  context?: BrowserContext;
+  urls?: string | string[];
+};
+
+export type CloudflareCookie = Awaited<
+  ReturnType<BrowserContext["cookies"]>
+>[number];
+
+export type TurnstileResponseData = {
+  source: "field" | "attribute";
+  selector: string;
+  name?: string;
+  id?: string;
+  value: string;
+};
+
+export type TurnstileWidgetData = {
+  selector: string;
+  id?: string;
+  className?: string;
+  sitekey?: string;
+  action?: string;
+  cData?: string;
+  callback?: string;
+  theme?: string;
+  size?: string;
+  language?: string;
+};
+
+export type CloudflareFieldData = {
+  selector: string;
+  name?: string;
+  id?: string;
+  value: string;
+};
+
+export type CloudflareStorageEntry = {
+  key: string;
+  value: string;
+};
+
+export type CloudflareData = {
+  url?: string;
+  userAgent?: string;
+  documentCookieNames: string[];
+  cookies: CloudflareCookie[];
+  cloudflareCookies: CloudflareCookie[];
+  clearanceCookie?: CloudflareCookie;
+  turnstile: {
+    present: boolean;
+    solved: boolean;
+    responses: TurnstileResponseData[];
+    tokens: string[];
+    sitekeys: string[];
+    widgets: TurnstileWidgetData[];
+    iframes: string[];
+    scripts: string[];
+  };
+  challenge: {
+    cleared: boolean;
+    fields: CloudflareFieldData[];
+    rayIds: string[];
+    options: unknown;
+  };
+  storage: {
+    local: CloudflareStorageEntry[];
+    session: CloudflareStorageEntry[];
+  };
+};
+
 const DEFAULT_TURNSTILE_SELECTORS = [
   '[name="cf-turnstile-response"]',
   'input[name="cf-turnstile-response"]',
@@ -40,8 +124,26 @@ const DEFAULT_TURNSTILE_SELECTORS = [
   "[data-cf-turnstile-response]",
 ];
 
+const TURNSTILE_RESPONSE_SELECTORS = [
+  'input[name="cf-turnstile-response"]',
+  'textarea[name="cf-turnstile-response"]',
+  'input[name="turnstile-response"]',
+  'textarea[name="turnstile-response"]',
+  'input[name="turnstile-token"]',
+  'textarea[name="turnstile-token"]',
+  '[data-cf-turnstile-response]',
+  '[data-turnstile-response]',
+  '[data-turnstile-token]',
+];
+
+const CLOUDFLARE_FIELD_SELECTOR =
+  'input[name*="cf-" i], input[name*="cf_" i], input[name*="turnstile" i], ' +
+  'textarea[name*="cf-" i], textarea[name*="cf_" i], textarea[name*="turnstile" i], ' +
+  '[data-ray], [data-cf-ray], [data-sitekey], [data-cf-turnstile-response]';
+
 const FALLBACK_SELECTORS = ["iframe", "div", "button", '[role="checkbox"]'];
 const FALLBACK_LIMIT = 80;
+const DEFAULT_TOKEN_MIN_LENGTH = 20;
 const attachedPages = new WeakSet<Page>();
 
 function normalizeOptions(
@@ -79,6 +181,19 @@ async function clickBox(page: Page, box: BoundingBox): Promise<boolean> {
 
 function looksLikeTurnstileBox(box: BoundingBox): boolean {
   return box.width >= 260 && box.width <= 340 && box.height >= 35 && box.height <= 90;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function isCloudflareCookie(cookie: CloudflareCookie): boolean {
+  return /^(?:__cf|_cf|cf_)/i.test(cookie.name);
+}
+
+function normalizeCookieUrls(urls: string | string[] | undefined): string[] | undefined {
+  if (!urls) return undefined;
+  return Array.isArray(urls) ? urls : [urls];
 }
 
 async function clickLocatorBox(page: Page, locator: Locator): Promise<boolean> {
@@ -151,6 +266,51 @@ async function clickTurnstileLocators(
   return false;
 }
 
+async function hasTurnstileLocators(
+  page: Page,
+  selectors: string[],
+  maxCandidatesPerSelector: number,
+): Promise<boolean> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    const count = await locator.count().catch(() => 0);
+
+    for (let index = 0; index < Math.min(count, maxCandidatesPerSelector); index++) {
+      const target = locator.nth(index);
+      const box = await target
+        .boundingBox({ timeout: 250 })
+        .catch(() => null);
+
+      if (box && looksLikeTurnstileBox(box)) return true;
+    }
+
+    if (count > 0) return true;
+  }
+
+  return false;
+}
+
+async function hasTurnstileFallback(page: Page): Promise<boolean> {
+  for (const selector of FALLBACK_SELECTORS) {
+    const locator = page.locator(selector);
+    const count = Math.min(
+      await locator.count().catch(() => 0),
+      FALLBACK_LIMIT,
+    );
+
+    for (let index = 0; index < count; index++) {
+      const box = await locator
+        .nth(index)
+        .boundingBox({ timeout: 250 })
+        .catch(() => null);
+
+      if (box && looksLikeTurnstileBox(box)) return true;
+    }
+  }
+
+  return false;
+}
+
 async function clickTurnstileFallback(page: Page): Promise<boolean> {
   const candidates: BoundingBox[] = [];
 
@@ -185,6 +345,348 @@ async function clickTurnstileFallback(page: Page): Promise<boolean> {
   }
 
   return false;
+}
+
+async function getCloudflarePageData(page: Page): Promise<
+  Omit<CloudflareData, "cookies" | "cloudflareCookies" | "clearanceCookie">
+> {
+  return page.evaluate(
+    ({
+      responseSelectors,
+      cloudflareFieldSelector,
+      minTokenLength,
+    }) => {
+      type ResponseData = TurnstileResponseData;
+      type WidgetData = TurnstileWidgetData;
+      type FieldData = CloudflareFieldData;
+      type StorageEntry = CloudflareStorageEntry;
+
+      const responseData: ResponseData[] = [];
+      const widgets: WidgetData[] = [];
+      const fields: FieldData[] = [];
+      const iframeSources: string[] = [];
+      const scriptSources: string[] = [];
+      const sitekeys: string[] = [];
+      const rayIds: string[] = [];
+
+      const pushUnique = (target: string[], value: string | null | undefined): void => {
+        if (value && !target.includes(value)) target.push(value);
+      };
+
+      const selectorFor = (element: Element): string => {
+        const tag = element.tagName.toLowerCase();
+        const id = element.getAttribute("id");
+        const name = element.getAttribute("name");
+
+        if (name) return `${tag}[name="${name}"]`;
+        if (id) return `${tag}#${id}`;
+
+        return tag;
+      };
+
+      const valueFor = (element: Element): string => {
+        if (
+          element instanceof HTMLInputElement ||
+          element instanceof HTMLTextAreaElement
+        ) {
+          return element.value;
+        }
+
+        return (
+          element.getAttribute("value") ??
+          element.getAttribute("data-cf-turnstile-response") ??
+          element.getAttribute("data-turnstile-response") ??
+          element.getAttribute("data-turnstile-token") ??
+          ""
+        );
+      };
+
+      const addResponse = (
+        element: Element,
+        source: ResponseData["source"],
+      ): void => {
+        const value = valueFor(element).trim();
+        if (!value) return;
+
+        const entry = {
+          source,
+          selector: selectorFor(element),
+          name: element.getAttribute("name") ?? undefined,
+          id: element.getAttribute("id") ?? undefined,
+          value,
+        };
+
+        if (
+          !responseData.some(
+            (existing) =>
+              existing.value === entry.value &&
+              existing.selector === entry.selector,
+          )
+        ) {
+          responseData.push(entry);
+        }
+      };
+
+      for (const selector of responseSelectors) {
+        try {
+          document
+            .querySelectorAll(selector)
+            .forEach((element) =>
+              addResponse(
+                element,
+                element.hasAttribute("data-cf-turnstile-response") ||
+                  element.hasAttribute("data-turnstile-response") ||
+                  element.hasAttribute("data-turnstile-token")
+                  ? "attribute"
+                  : "field",
+              ),
+            );
+        } catch (_error) {}
+      }
+
+      document
+        .querySelectorAll("[data-sitekey], .cf-turnstile")
+        .forEach((element) => {
+          const sitekey = element.getAttribute("data-sitekey") ?? undefined;
+          const widget = {
+            selector: selectorFor(element),
+            id: element.getAttribute("id") ?? undefined,
+            className: element.getAttribute("class") ?? undefined,
+            sitekey,
+            action: element.getAttribute("data-action") ?? undefined,
+            cData: element.getAttribute("data-cdata") ?? undefined,
+            callback: element.getAttribute("data-callback") ?? undefined,
+            theme: element.getAttribute("data-theme") ?? undefined,
+            size: element.getAttribute("data-size") ?? undefined,
+            language: element.getAttribute("data-language") ?? undefined,
+          };
+
+          widgets.push(widget);
+          pushUnique(sitekeys, sitekey);
+        });
+
+      document.querySelectorAll("iframe").forEach((iframe) => {
+        const src = iframe.getAttribute("src");
+        if (!src || !/cloudflare|turnstile|challenge/i.test(src)) return;
+
+        pushUnique(iframeSources, src);
+
+        try {
+          const parsed = new URL(src, location.href);
+          pushUnique(sitekeys, parsed.searchParams.get("sitekey"));
+          pushUnique(sitekeys, parsed.searchParams.get("siteKey"));
+          pushUnique(sitekeys, parsed.searchParams.get("k"));
+        } catch (_error) {}
+      });
+
+      document.querySelectorAll("script[src]").forEach((script) => {
+        const src = script.getAttribute("src");
+        if (src && /cloudflare|turnstile|challenge-platform/i.test(src)) {
+          pushUnique(scriptSources, src);
+        }
+      });
+
+      try {
+        document.querySelectorAll(cloudflareFieldSelector).forEach((element) => {
+          const value = valueFor(element).trim();
+          const name = element.getAttribute("name") ?? undefined;
+          const id = element.getAttribute("id") ?? undefined;
+          const rayId =
+            element.getAttribute("data-ray") ??
+            element.getAttribute("data-cf-ray");
+
+          pushUnique(rayIds, rayId);
+
+          if (!value) return;
+
+          fields.push({
+            selector: selectorFor(element),
+            name,
+            id,
+            value,
+          });
+        });
+      } catch (_error) {}
+
+      const collectStorage = (storage: Storage): StorageEntry[] => {
+        const entries: StorageEntry[] = [];
+
+        for (let index = 0; index < storage.length; index++) {
+          const key = storage.key(index);
+          if (!key || !/cloudflare|turnstile|cf[_-]|cfchl|cf_chl|challenge/i.test(key)) {
+            continue;
+          }
+
+          entries.push({
+            key,
+            value: storage.getItem(key) ?? "",
+          });
+        }
+
+        return entries;
+      };
+
+      const safeCollectStorage = (
+        getStorage: () => Storage,
+      ): StorageEntry[] => {
+        try {
+          return collectStorage(getStorage());
+        } catch (_error) {
+          return [];
+        }
+      };
+
+      const challengeOptions = (() => {
+        try {
+          const value = (window as Window & { _cf_chl_opt?: unknown })._cf_chl_opt;
+          return value === undefined
+            ? null
+            : JSON.parse(JSON.stringify(value)) as unknown;
+        } catch (_error) {
+          return null;
+        }
+      })();
+
+      const tokens = responseData
+        .map((response) => response.value)
+        .filter((value) => value.length >= minTokenLength);
+      const present =
+        responseData.length > 0 ||
+        widgets.length > 0 ||
+        sitekeys.length > 0 ||
+        iframeSources.some((src) => /turnstile/i.test(src));
+
+      return {
+        url: location.href,
+        userAgent: navigator.userAgent,
+        documentCookieNames: document.cookie
+          .split(";")
+          .map((part) => part.trim().split("=")[0])
+          .filter(Boolean),
+        turnstile: {
+          present,
+          solved: tokens.length > 0,
+          responses: responseData,
+          tokens,
+          sitekeys,
+          widgets,
+          iframes: iframeSources,
+          scripts: scriptSources,
+        },
+        challenge: {
+          cleared: false,
+          fields,
+          rayIds,
+          options: challengeOptions,
+        },
+        storage: {
+          local: safeCollectStorage(() => localStorage),
+          session: safeCollectStorage(() => sessionStorage),
+        },
+      };
+    },
+    {
+      responseSelectors: TURNSTILE_RESPONSE_SELECTORS,
+      cloudflareFieldSelector: CLOUDFLARE_FIELD_SELECTOR,
+      minTokenLength: DEFAULT_TOKEN_MIN_LENGTH,
+    },
+  );
+}
+
+export async function hasTurnstile({
+  page,
+  selectors = DEFAULT_TURNSTILE_SELECTORS,
+  maxCandidatesPerSelector = 5,
+  includeFallback = true,
+}: HasTurnstileOptions): Promise<boolean> {
+  if (
+    await hasTurnstileLocators(
+      page,
+      selectors,
+      maxCandidatesPerSelector,
+    )
+  ) {
+    return true;
+  }
+
+  if (!includeFallback) return false;
+
+  return hasTurnstileFallback(page);
+}
+
+export async function isTurnstileSolved({
+  page,
+  minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
+}: IsTurnstileSolvedOptions): Promise<boolean> {
+  const data = await getCloudflarePageData(page);
+
+  return data.turnstile.responses.some(
+    (response) => response.value.trim().length >= minTokenLength,
+  );
+}
+
+export async function getCloudflareData({
+  page,
+  context = page?.context(),
+  urls,
+}: CloudflareDataOptions): Promise<CloudflareData> {
+  const pageData = page
+    ? await getCloudflarePageData(page)
+    : {
+        url: undefined,
+        userAgent: undefined,
+        documentCookieNames: [],
+        turnstile: {
+          present: false,
+          solved: false,
+          responses: [],
+          tokens: [],
+          sitekeys: [],
+          widgets: [],
+          iframes: [],
+          scripts: [],
+        },
+        challenge: {
+          cleared: false,
+          fields: [],
+          rayIds: [],
+          options: null,
+        },
+        storage: {
+          local: [],
+          session: [],
+        },
+      };
+  const cookies = context
+    ? await context.cookies(normalizeCookieUrls(urls)).catch(() => [])
+    : [];
+  const cloudflareCookies = cookies.filter(isCloudflareCookie);
+  const clearanceCookie = cloudflareCookies.find(
+    (cookie) => cookie.name === "cf_clearance",
+  );
+  const cookieSolved = Boolean(clearanceCookie);
+
+  return {
+    url: pageData.url,
+    userAgent: pageData.userAgent,
+    documentCookieNames: pageData.documentCookieNames,
+    cookies,
+    cloudflareCookies,
+    clearanceCookie,
+    turnstile: {
+      ...pageData.turnstile,
+      solved: pageData.turnstile.solved,
+      tokens: unique(pageData.turnstile.tokens),
+      sitekeys: unique(pageData.turnstile.sitekeys),
+      iframes: unique(pageData.turnstile.iframes),
+      scripts: unique(pageData.turnstile.scripts),
+    },
+    challenge: {
+      ...pageData.challenge,
+      cleared: cookieSolved,
+    },
+    storage: pageData.storage,
+  };
 }
 
 export async function checkTurnstile({
