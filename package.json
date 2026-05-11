@@ -1,0 +1,48 @@
+{
+  "name": "patchright-difz",
+  "version": "0.2.0",
+  "description": "Patchright wrapper with optional Turnstile auto-click helper.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Difz25x/patchright-difz.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Difz25x/patchright-difz/issues"
+  },
+  "homepage": "https://github.com/Difz25x/patchright-difz#readme",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "publish": "node ./scripts/publish.js"
+  },
+  "keywords": [
+    "patchright",
+    "turnstile",
+    "cloudflare",
+    "browser-automation"
+  ],
+  "author": "Difz",
+  "license": "MIT",
+  "dependencies": {
+    "patchright": "^1.59.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.2",
+    "typescript": "^6.0.3"
+  }
+}
