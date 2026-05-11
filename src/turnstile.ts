@@ -19,6 +19,10 @@ export type TurnstileAutoOptions = {
   intervalMs?: number;
   selectors?: string[];
   maxCandidatesPerSelector?: number;
+  foreground?: boolean;
+  clickDelayMs?: number;
+  mouseMoveSteps?: number;
+  waitAfterClickMs?: number;
   logger?: (message: string) => void;
 };
 
@@ -27,6 +31,10 @@ export type CheckTurnstileOptions = {
   timeoutMs?: number;
   selectors?: string[];
   maxCandidatesPerSelector?: number;
+  foreground?: boolean;
+  clickDelayMs?: number;
+  mouseMoveSteps?: number;
+  waitAfterClickMs?: number;
 };
 
 export type HasTurnstileOptions = {
@@ -37,7 +45,9 @@ export type HasTurnstileOptions = {
 };
 
 export type IsTurnstileSolvedOptions = {
-  page: Page;
+  page?: Page;
+  context?: BrowserContext;
+  urls?: string | string[];
   minTokenLength?: number;
 };
 
@@ -45,6 +55,7 @@ export type CloudflareDataOptions = {
   page?: Page;
   context?: BrowserContext;
   urls?: string | string[];
+  minTokenLength?: number;
 };
 
 export type CloudflareCookie = Awaited<
@@ -113,28 +124,29 @@ export type CloudflareData = {
   };
 };
 
-const DEFAULT_TURNSTILE_SELECTORS = [
+const OPTIONAL_TURNSTILE_RESPONSE_SELECTORS = [
   '[name="cf-turnstile-response"]',
-  'input[name="cf-turnstile-response"]',
-  'iframe[src*="challenges.cloudflare.com"]',
-  'iframe[title*="Cloudflare"]',
-  'iframe[title*="challenge"]',
-  ".cf-turnstile",
-  "[data-sitekey]",
-  "[data-cf-turnstile-response]",
-];
-
-const TURNSTILE_RESPONSE_SELECTORS = [
   'input[name="cf-turnstile-response"]',
   'textarea[name="cf-turnstile-response"]',
   'input[name="turnstile-response"]',
   'textarea[name="turnstile-response"]',
   'input[name="turnstile-token"]',
   'textarea[name="turnstile-token"]',
-  '[data-cf-turnstile-response]',
-  '[data-turnstile-response]',
-  '[data-turnstile-token]',
+  "[data-cf-turnstile-response]",
+  "[data-turnstile-response]",
+  "[data-turnstile-token]",
 ];
+
+const DEFAULT_TURNSTILE_SELECTORS = [
+  'iframe[src*="challenges.cloudflare.com"]',
+  'iframe[title*="Cloudflare"]',
+  'iframe[title*="challenge"]',
+  ".cf-turnstile",
+  "[data-sitekey]",
+  ...OPTIONAL_TURNSTILE_RESPONSE_SELECTORS,
+];
+
+const TURNSTILE_RESPONSE_SELECTORS = OPTIONAL_TURNSTILE_RESPONSE_SELECTORS;
 
 const CLOUDFLARE_FIELD_SELECTOR =
   'input[name*="cf-" i], input[name*="cf_" i], input[name*="turnstile" i], ' +
@@ -146,6 +158,20 @@ const FALLBACK_LIMIT = 80;
 const DEFAULT_TOKEN_MIN_LENGTH = 20;
 const attachedPages = new WeakSet<Page>();
 
+type ClickBehaviorOptions = {
+  foreground: boolean;
+  clickDelayMs: number;
+  mouseMoveSteps: number;
+  waitAfterClickMs: number;
+};
+
+const DEFAULT_CLICK_BEHAVIOR: ClickBehaviorOptions = {
+  foreground: true,
+  clickDelayMs: 35,
+  mouseMoveSteps: 8,
+  waitAfterClickMs: 150,
+};
+
 function normalizeOptions(
   option: TurnstileOption | undefined,
 ): Required<Omit<TurnstileAutoOptions, "logger">> &
@@ -153,10 +179,14 @@ function normalizeOptions(
   const options = typeof option === "object" ? option : {};
 
   return {
-    timeoutMs: options.timeoutMs ?? 5000,
-    intervalMs: options.intervalMs ?? 2000,
+    timeoutMs: options.timeoutMs ?? 3000,
+    intervalMs: options.intervalMs ?? 750,
     selectors: options.selectors ?? DEFAULT_TURNSTILE_SELECTORS,
     maxCandidatesPerSelector: options.maxCandidatesPerSelector ?? 5,
+    foreground: options.foreground ?? DEFAULT_CLICK_BEHAVIOR.foreground,
+    clickDelayMs: options.clickDelayMs ?? DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
+    mouseMoveSteps: options.mouseMoveSteps ?? DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
+    waitAfterClickMs: options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
     logger: options.logger,
   };
 }
@@ -170,11 +200,58 @@ function getClickPoint(box: BoundingBox): { x: number; y: number } {
   };
 }
 
-async function clickBox(page: Page, box: BoundingBox): Promise<boolean> {
+function clickOptionsFromCheckOptions({
+  foreground = DEFAULT_CLICK_BEHAVIOR.foreground,
+  clickDelayMs = DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
+  mouseMoveSteps = DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
+  waitAfterClickMs = DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
+}: Partial<ClickBehaviorOptions>): ClickBehaviorOptions {
+  return {
+    foreground,
+    clickDelayMs,
+    mouseMoveSteps,
+    waitAfterClickMs,
+  };
+}
+
+async function preparePageForClick(
+  page: Page,
+  options: ClickBehaviorOptions,
+): Promise<void> {
+  if (!options.foreground) return;
+
+  await page.bringToFront().catch(() => undefined);
+  await page
+    .evaluate(() => {
+      window.focus();
+      document.body?.focus?.();
+    })
+    .catch(() => undefined);
+}
+
+async function clickBox(
+  page: Page,
+  box: BoundingBox,
+  options: ClickBehaviorOptions,
+): Promise<boolean> {
   if (box.width <= 0 || box.height <= 0) return false;
 
   const point = getClickPoint(box);
-  await page.mouse.click(point.x, point.y);
+  await preparePageForClick(page, options);
+  await page.mouse.move(point.x, point.y, {
+    steps: options.mouseMoveSteps,
+  });
+  await page.mouse.down();
+
+  if (options.clickDelayMs > 0) {
+    await page.waitForTimeout(options.clickDelayMs).catch(() => undefined);
+  }
+
+  await page.mouse.up();
+
+  if (options.waitAfterClickMs > 0) {
+    await page.waitForTimeout(options.waitAfterClickMs).catch(() => undefined);
+  }
 
   return true;
 }
@@ -196,24 +273,58 @@ function normalizeCookieUrls(urls: string | string[] | undefined): string[] | un
   return Array.isArray(urls) ? urls : [urls];
 }
 
-async function clickLocatorBox(page: Page, locator: Locator): Promise<boolean> {
+function isOptionalResponseSelector(selector: string): boolean {
+  return OPTIONAL_TURNSTILE_RESPONSE_SELECTORS.includes(selector);
+}
+
+async function clickLocatorBox(
+  page: Page,
+  locator: Locator,
+  options: ClickBehaviorOptions,
+): Promise<boolean> {
   const box = await locator.boundingBox({ timeout: 1000 }).catch(() => null);
 
   if (!box) return false;
 
-  return clickBox(page, box);
+  const point = getClickPoint(box);
+  await preparePageForClick(page, options);
+
+  const clickedByLocator = await locator
+    .click({
+      force: true,
+      timeout: 1000,
+      delay: options.clickDelayMs,
+      steps: options.mouseMoveSteps,
+      position: {
+        x: Math.max(1, point.x - box.x),
+        y: Math.max(1, point.y - box.y),
+      },
+    })
+    .then(() => true)
+    .catch(() => false);
+
+  if (clickedByLocator) {
+    if (options.waitAfterClickMs > 0) {
+      await page.waitForTimeout(options.waitAfterClickMs).catch(() => undefined);
+    }
+
+    return true;
+  }
+
+  return clickBox(page, box, options);
 }
 
 async function clickElementOrParentBox(
   page: Page,
   element: ElementHandle<Element>,
+  options: ClickBehaviorOptions,
 ): Promise<boolean> {
   let current: ElementHandle<Element> | null = element;
 
   for (let depth = 0; depth < 8 && current; depth++) {
     const box = await current.boundingBox().catch(() => null);
 
-    if (box && looksLikeTurnstileBox(box) && (await clickBox(page, box))) {
+    if (box && looksLikeTurnstileBox(box) && (await clickBox(page, box, options))) {
       return true;
     }
 
@@ -238,6 +349,7 @@ async function clickTurnstileLocators(
   page: Page,
   selectors: string[],
   maxCandidatesPerSelector: number,
+  options: ClickBehaviorOptions,
 ): Promise<boolean> {
   for (const selector of selectors) {
     const locator = page.locator(selector);
@@ -246,19 +358,26 @@ async function clickTurnstileLocators(
     for (let index = 0; index < Math.min(count, maxCandidatesPerSelector); index++) {
       const target = locator.nth(index);
 
-      if (await clickLocatorBox(page, target).catch(() => false)) {
+      if (await clickLocatorBox(page, target, options).catch(() => false)) {
         return true;
       }
 
       const element = await target.elementHandle({ timeout: 1000 });
-      if (
-        element &&
-        (await clickElementOrParentBox(
-          page,
-          element as ElementHandle<Element>,
-        ).catch(() => false))
-      ) {
-        return true;
+
+      if (element) {
+        try {
+          if (
+            await clickElementOrParentBox(
+              page,
+              element as ElementHandle<Element>,
+              options,
+            ).catch(() => false)
+          ) {
+            return true;
+          }
+        } finally {
+          await element.dispose().catch(() => undefined);
+        }
       }
     }
   }
@@ -284,7 +403,7 @@ async function hasTurnstileLocators(
       if (box && looksLikeTurnstileBox(box)) return true;
     }
 
-    if (count > 0) return true;
+    if (count > 0 && !isOptionalResponseSelector(selector)) return true;
   }
 
   return false;
@@ -298,20 +417,25 @@ async function hasTurnstileFallback(page: Page): Promise<boolean> {
       FALLBACK_LIMIT,
     );
 
-    for (let index = 0; index < count; index++) {
-      const box = await locator
-        .nth(index)
-        .boundingBox({ timeout: 250 })
-        .catch(() => null);
+    const boxes = await Promise.all(
+      Array.from({ length: count }, (_value, index) =>
+        locator
+          .nth(index)
+          .boundingBox({ timeout: 250 })
+          .catch(() => null),
+      ),
+    );
 
-      if (box && looksLikeTurnstileBox(box)) return true;
-    }
+    if (boxes.some((box) => box && looksLikeTurnstileBox(box))) return true;
   }
 
   return false;
 }
 
-async function clickTurnstileFallback(page: Page): Promise<boolean> {
+async function clickTurnstileFallback(
+  page: Page,
+  options: ClickBehaviorOptions,
+): Promise<boolean> {
   const candidates: BoundingBox[] = [];
 
   for (const selector of FALLBACK_SELECTORS) {
@@ -321,15 +445,17 @@ async function clickTurnstileFallback(page: Page): Promise<boolean> {
       FALLBACK_LIMIT,
     );
 
-    for (let index = 0; index < count; index++) {
-      const box = await locator
-        .nth(index)
-        .boundingBox({ timeout: 250 })
-        .catch(() => null);
+    const boxes = await Promise.all(
+      Array.from({ length: count }, (_value, index) =>
+        locator
+          .nth(index)
+          .boundingBox({ timeout: 250 })
+          .catch(() => null),
+      ),
+    );
 
-      if (box && looksLikeTurnstileBox(box)) {
-        candidates.push(box);
-      }
+    for (const box of boxes) {
+      if (box && looksLikeTurnstileBox(box)) candidates.push(box);
     }
   }
 
@@ -341,13 +467,16 @@ async function clickTurnstileFallback(page: Page): Promise<boolean> {
   });
 
   for (const box of candidates) {
-    if (await clickBox(page, box).catch(() => false)) return true;
+    if (await clickBox(page, box, options).catch(() => false)) return true;
   }
 
   return false;
 }
 
-async function getCloudflarePageData(page: Page): Promise<
+async function getCloudflarePageData(
+  page: Page,
+  minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
+): Promise<
   Omit<CloudflareData, "cookies" | "cloudflareCookies" | "clearanceCookie">
 > {
   return page.evaluate(
@@ -588,7 +717,7 @@ async function getCloudflarePageData(page: Page): Promise<
     {
       responseSelectors: TURNSTILE_RESPONSE_SELECTORS,
       cloudflareFieldSelector: CLOUDFLARE_FIELD_SELECTOR,
-      minTokenLength: DEFAULT_TOKEN_MIN_LENGTH,
+      minTokenLength,
     },
   );
 }
@@ -616,22 +745,29 @@ export async function hasTurnstile({
 
 export async function isTurnstileSolved({
   page,
+  context = page?.context(),
+  urls,
   minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
 }: IsTurnstileSolvedOptions): Promise<boolean> {
-  const data = await getCloudflarePageData(page);
+  const data = await getCloudflareData({
+    page,
+    context,
+    urls,
+    minTokenLength,
+  });
 
-  return data.turnstile.responses.some(
-    (response) => response.value.trim().length >= minTokenLength,
-  );
+  return Boolean(data.clearanceCookie) ||
+    data.turnstile.tokens.some((token) => token.trim().length >= minTokenLength);
 }
 
 export async function getCloudflareData({
   page,
   context = page?.context(),
   urls,
+  minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
 }: CloudflareDataOptions): Promise<CloudflareData> {
   const pageData = page
-    ? await getCloudflarePageData(page)
+    ? await getCloudflarePageData(page, minTokenLength)
     : {
         url: undefined,
         userAgent: undefined,
@@ -694,8 +830,20 @@ export async function checkTurnstile({
   timeoutMs = 5000,
   selectors = DEFAULT_TURNSTILE_SELECTORS,
   maxCandidatesPerSelector = 5,
+  foreground = DEFAULT_CLICK_BEHAVIOR.foreground,
+  clickDelayMs = DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
+  mouseMoveSteps = DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
+  waitAfterClickMs = DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
 }: CheckTurnstileOptions): Promise<boolean> {
   const startedAt = Date.now();
+  const clickOptions = clickOptionsFromCheckOptions({
+    foreground,
+    clickDelayMs,
+    mouseMoveSteps,
+    waitAfterClickMs,
+  });
+
+  if (await isTurnstileSolved({ page }).catch(() => false)) return true;
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
@@ -704,17 +852,18 @@ export async function checkTurnstile({
           page,
           selectors,
           maxCandidatesPerSelector,
+          clickOptions,
         )
       ) {
         return true;
       }
 
-      if (await clickTurnstileFallback(page)) {
+      if (await clickTurnstileFallback(page, clickOptions)) {
         return true;
       }
     } catch (_err) {}
 
-    await page.waitForTimeout(500).catch(() => undefined);
+    await page.waitForTimeout(250).catch(() => undefined);
   }
 
   return false;
@@ -744,6 +893,10 @@ export function installTurnstileAutoSolver(
           timeoutMs: options.timeoutMs,
           selectors: options.selectors,
           maxCandidatesPerSelector: options.maxCandidatesPerSelector,
+          foreground: options.foreground,
+          clickDelayMs: options.clickDelayMs,
+          mouseMoveSteps: options.mouseMoveSteps,
+          waitAfterClickMs: options.waitAfterClickMs,
         });
 
         if (clicked) {
