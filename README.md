@@ -47,7 +47,6 @@ const context = await chromium.launchPersistentContext(userDataDir, {
   channel: "chrome",
   viewport: null,
   turnstile: {
-    timeoutMs: 5000,
     intervalMs: 750,
     foreground: true,
     clickDelayMs: 35,
@@ -70,8 +69,15 @@ const context = await chromium.launchPersistentContext(".profile", {
 const page = await context.newPage();
 
 await page.goto("https://example.com");
-await checkTurnstile({ page });
+const stopWatching = checkTurnstile({ page });
+
+// Later, when you no longer want the page watcher:
+stopWatching();
 ```
+
+`checkTurnstile` installs a permanent watcher for that page. It reacts to
+reloads, frame navigations, History API URL changes, hash/popstate changes, and
+DOM mutations. It returns a cleanup function instead of a one-shot boolean.
 
 Turnstile and Cloudflare data helpers:
 

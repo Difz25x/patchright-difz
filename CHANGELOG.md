@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 - 2026-05-12
+
+- Changed `checkTurnstile` into a permanent page watcher that returns a cleanup function.
+- Updated `installTurnstileAutoSolver` and `turnstile: true` to use the same no-timeout page watcher.
+- Added page-side detection signals for DOM mutations, History API URL changes,
+  hash/popstate changes, reloads, and load state changes.
+
 ## 0.4.1 - 2026-05-12
 
 - Improved Turnstile clicking by bringing the page to the foreground before mouse actions and using stepped mouse movement.

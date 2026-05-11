@@ -156,7 +156,6 @@ const CLOUDFLARE_FIELD_SELECTOR =
 const FALLBACK_SELECTORS = ["iframe", "div", "button", '[role="checkbox"]'];
 const FALLBACK_LIMIT = 80;
 const DEFAULT_TOKEN_MIN_LENGTH = 20;
-const attachedPages = new WeakSet<Page>();
 
 type ClickBehaviorOptions = {
   foreground: boolean;
@@ -172,10 +171,25 @@ const DEFAULT_CLICK_BEHAVIOR: ClickBehaviorOptions = {
   waitAfterClickMs: 150,
 };
 
+type NormalizedTurnstileOptions = Required<
+  Omit<TurnstileAutoOptions, "logger">
+> &
+  Pick<TurnstileAutoOptions, "logger">;
+
+type DisposableLike = {
+  dispose: () => Promise<void> | void;
+};
+
+type PageWatch = {
+  cleanup: () => void;
+  refs: number;
+};
+
+const watchedPages = new WeakMap<Page, PageWatch>();
+
 function normalizeOptions(
   option: TurnstileOption | undefined,
-): Required<Omit<TurnstileAutoOptions, "logger">> &
-  Pick<TurnstileAutoOptions, "logger"> {
+): NormalizedTurnstileOptions {
   const options = typeof option === "object" ? option : {};
 
   return {
@@ -275,6 +289,12 @@ function normalizeCookieUrls(urls: string | string[] | undefined): string[] | un
 
 function isOptionalResponseSelector(selector: string): boolean {
   return OPTIONAL_TURNSTILE_RESPONSE_SELECTORS.includes(selector);
+}
+
+function scheduleSoon(callback: () => void, delayMs = 75): () => void {
+  const timeout = setTimeout(callback, delayMs);
+
+  return () => clearTimeout(timeout);
 }
 
 async function clickLocatorBox(
@@ -825,9 +845,8 @@ export async function getCloudflareData({
   };
 }
 
-export async function checkTurnstile({
+async function solveTurnstileOnce({
   page,
-  timeoutMs = 5000,
   selectors = DEFAULT_TURNSTILE_SELECTORS,
   maxCandidatesPerSelector = 5,
   foreground = DEFAULT_CLICK_BEHAVIOR.foreground,
@@ -835,7 +854,6 @@ export async function checkTurnstile({
   mouseMoveSteps = DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
   waitAfterClickMs = DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
 }: CheckTurnstileOptions): Promise<boolean> {
-  const startedAt = Date.now();
   const clickOptions = clickOptionsFromCheckOptions({
     foreground,
     clickDelayMs,
@@ -843,30 +861,219 @@ export async function checkTurnstile({
     waitAfterClickMs,
   });
 
-  if (await isTurnstileSolved({ page }).catch(() => false)) return true;
+  if (await isTurnstileSolved({ page }).catch(() => false)) return false;
 
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      if (
-        await clickTurnstileLocators(
-          page,
-          selectors,
-          maxCandidatesPerSelector,
-          clickOptions,
-        )
-      ) {
-        return true;
-      }
-
-      if (await clickTurnstileFallback(page, clickOptions)) {
-        return true;
-      }
-    } catch (_err) {}
-
-    await page.waitForTimeout(250).catch(() => undefined);
+  if (
+    await clickTurnstileLocators(
+      page,
+      selectors,
+      maxCandidatesPerSelector,
+      clickOptions,
+    )
+  ) {
+    return true;
   }
 
-  return false;
+  return clickTurnstileFallback(page, clickOptions);
+}
+
+async function installPageChangeSignals(
+  page: Page,
+  schedule: () => void,
+): Promise<DisposableLike | undefined> {
+  const bindingName = `__patchrightDifzTurnstileSignal_${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  const disposable = await page
+    .exposeFunction(bindingName, schedule)
+    .catch(() => undefined);
+  const installScript = (name: string): void => {
+    const target = window as Window & {
+      __patchrightDifzTurnstileWatch?: {
+        bindingName?: string;
+        installed?: boolean;
+        notifyTimer?: number;
+      };
+    };
+    const state = target.__patchrightDifzTurnstileWatch ?? {};
+    target.__patchrightDifzTurnstileWatch = state;
+    state.bindingName = name;
+
+    const notify = (): void => {
+      if (state.notifyTimer) window.clearTimeout(state.notifyTimer);
+
+      state.notifyTimer = window.setTimeout(() => {
+        const callback = (
+          window as unknown as Record<string, (() => Promise<void>) | undefined>
+        )[state.bindingName ?? ""];
+
+        void callback?.().catch(() => undefined);
+      }, 75);
+    };
+
+    if (state.installed) {
+      notify();
+      return;
+    }
+
+    state.installed = true;
+
+    const patchHistory = (methodName: "pushState" | "replaceState"): void => {
+      const original = history[methodName];
+
+      history[methodName] = function patchedHistoryMethod(
+        this: History,
+        ...args: Parameters<History["pushState"]>
+      ) {
+        const result = original.apply(this, args);
+        notify();
+
+        return result;
+      } as History[typeof methodName];
+    };
+
+    new MutationObserver(notify).observe(document.documentElement ?? document, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    patchHistory("pushState");
+    patchHistory("replaceState");
+    window.addEventListener("hashchange", notify, true);
+    window.addEventListener("popstate", notify, true);
+    document.addEventListener("readystatechange", notify, true);
+    document.addEventListener("DOMContentLoaded", notify, true);
+    window.addEventListener("load", notify, true);
+    notify();
+  };
+
+  await page.addInitScript(installScript, bindingName).catch(() => undefined);
+  await page.evaluate(installScript, bindingName).catch(() => undefined);
+
+  return disposable;
+}
+
+function watchTurnstilePage(
+  page: Page,
+  options: NormalizedTurnstileOptions,
+): () => void {
+  const existing = watchedPages.get(page);
+
+  if (existing) {
+    existing.refs++;
+
+    return () => {
+      const current = watchedPages.get(page);
+      if (!current) return;
+
+      current.refs--;
+      if (current.refs <= 0) {
+        current.cleanup();
+        watchedPages.delete(page);
+      }
+    };
+  }
+
+  let closed = false;
+  let running = false;
+  let pending = false;
+  let cancelScheduledRun: (() => void) | undefined;
+  let signalDisposable: DisposableLike | undefined;
+
+  const run = async (): Promise<void> => {
+    if (closed) return;
+
+    if (running) {
+      pending = true;
+      return;
+    }
+
+    running = true;
+    pending = false;
+
+    try {
+      const clicked = await solveTurnstileOnce({
+        page,
+        selectors: options.selectors,
+        maxCandidatesPerSelector: options.maxCandidatesPerSelector,
+        foreground: options.foreground,
+        clickDelayMs: options.clickDelayMs,
+        mouseMoveSteps: options.mouseMoveSteps,
+        waitAfterClickMs: options.waitAfterClickMs,
+      });
+
+      if (clicked) {
+        options.logger?.("turnstile candidate clicked");
+      }
+    } catch (error) {
+      options.logger?.(
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      running = false;
+      if (pending && !closed) schedule();
+    }
+  };
+
+  const schedule = (): void => {
+    if (closed || cancelScheduledRun) return;
+
+    cancelScheduledRun = scheduleSoon(() => {
+      cancelScheduledRun = undefined;
+      void run();
+    });
+  };
+
+  const interval = setInterval(schedule, options.intervalMs);
+  const cleanup = (): void => {
+    if (closed) return;
+
+    closed = true;
+    cancelScheduledRun?.();
+    clearInterval(interval);
+    page.off("close", cleanup);
+    page.off("domcontentloaded", schedule);
+    page.off("load", schedule);
+    page.off("framenavigated", schedule);
+    Promise.resolve(signalDisposable?.dispose()).catch(() => undefined);
+  };
+  const watch: PageWatch = {
+    cleanup,
+    refs: 1,
+  };
+
+  watchedPages.set(page, watch);
+  page.on("close", cleanup);
+  page.on("domcontentloaded", schedule);
+  page.on("load", schedule);
+  page.on("framenavigated", schedule);
+  void installPageChangeSignals(page, schedule).then((disposable) => {
+    if (closed) {
+      Promise.resolve(disposable?.dispose()).catch(() => undefined);
+      return;
+    }
+
+    signalDisposable = disposable;
+  });
+  schedule();
+
+  return () => {
+    const current = watchedPages.get(page);
+    if (!current) return;
+
+    current.refs--;
+    if (current.refs <= 0) {
+      current.cleanup();
+      watchedPages.delete(page);
+    }
+  };
+}
+
+export function checkTurnstile({
+  page,
+  ...options
+}: CheckTurnstileOptions): () => void {
+  return watchTurnstilePage(page, normalizeOptions(options));
 }
 
 export function installTurnstileAutoSolver(
@@ -874,55 +1081,18 @@ export function installTurnstileAutoSolver(
   option: TurnstileOption = true,
 ): () => void {
   const options = normalizeOptions(option);
+  const pageCleanups = new Set<() => void>();
 
   const attachPage = (page: Page): void => {
-    if (attachedPages.has(page)) return;
-    attachedPages.add(page);
-
-    let closed = false;
-    let running = false;
-
-    const run = async (): Promise<void> => {
-      if (closed || running) return;
-
-      running = true;
-
-      try {
-        const clicked = await checkTurnstile({
-          page,
-          timeoutMs: options.timeoutMs,
-          selectors: options.selectors,
-          maxCandidatesPerSelector: options.maxCandidatesPerSelector,
-          foreground: options.foreground,
-          clickDelayMs: options.clickDelayMs,
-          mouseMoveSteps: options.mouseMoveSteps,
-          waitAfterClickMs: options.waitAfterClickMs,
-        });
-
-        if (clicked) {
-          options.logger?.("turnstile candidate clicked");
-        }
-      } catch (error) {
-        options.logger?.(
-          error instanceof Error ? error.message : String(error),
-        );
-      } finally {
-        running = false;
-      }
-    };
-
-    const interval = setInterval(run, options.intervalMs);
+    const stopWatching = watchTurnstilePage(page, options);
     const cleanup = (): void => {
-      closed = true;
-      clearInterval(interval);
+      page.off("close", cleanup);
+      stopWatching();
+      pageCleanups.delete(cleanup);
     };
 
     page.on("close", cleanup);
-    page.on("domcontentloaded", run);
-    page.on("load", run);
-    page.on("framenavigated", run);
-
-    setTimeout(run, 0);
+    pageCleanups.add(cleanup);
   };
 
   context.pages().forEach(attachPage);
@@ -930,5 +1100,8 @@ export function installTurnstileAutoSolver(
 
   return () => {
     context.off("page", attachPage);
+    for (const cleanup of pageCleanups) {
+      cleanup();
+    }
   };
 }
