@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 - 2026-05-12
+
+- Added Turnstile click cooldown/backoff so the watcher does not repeatedly click while a widget is still processing or reloading.
+- Stopped using hidden Turnstile response fields as clickable targets; they remain token/data evidence only.
+- Skipped expensive fallback scans on pages without Cloudflare/Turnstile indicators.
+- Made page-side watcher signals tolerate exposed functions that return `void`.
+- Made Cloudflare data collection tolerate pages where `document.cookie` is blocked.
+
 ## 0.5.0 - 2026-05-12
 
 - Changed `checkTurnstile` into a permanent page watcher that returns a cleanup function.

@@ -1,6 +1,6 @@
 {
   "name": "patchright-difz",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Patchright wrapper with optional Turnstile auto-click helper.",
   "type": "module",
   "repository": {

@@ -51,6 +51,8 @@ const context = await chromium.launchPersistentContext(userDataDir, {
     foreground: true,
     clickDelayMs: 35,
     mouseMoveSteps: 8,
+    clickCooldownMs: 8000,
+    maxClickCooldownMs: 60000,
     logger: console.error,
   },
 });
@@ -78,6 +80,9 @@ stopWatching();
 `checkTurnstile` installs a permanent watcher for that page. It reacts to
 reloads, frame navigations, History API URL changes, hash/popstate changes, and
 DOM mutations. It returns a cleanup function instead of a one-shot boolean.
+After a click, the watcher waits before trying again and increases the retry
+cooldown while the same page keeps presenting candidates. Hidden response fields
+are treated as token/data evidence only, not as clickable targets.
 
 Turnstile and Cloudflare data helpers:
 

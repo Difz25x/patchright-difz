@@ -23,6 +23,8 @@ export type TurnstileAutoOptions = {
   clickDelayMs?: number;
   mouseMoveSteps?: number;
   waitAfterClickMs?: number;
+  clickCooldownMs?: number;
+  maxClickCooldownMs?: number;
   logger?: (message: string) => void;
 };
 
@@ -35,6 +37,8 @@ export type CheckTurnstileOptions = {
   clickDelayMs?: number;
   mouseMoveSteps?: number;
   waitAfterClickMs?: number;
+  clickCooldownMs?: number;
+  maxClickCooldownMs?: number;
 };
 
 export type HasTurnstileOptions = {
@@ -185,6 +189,11 @@ type PageWatch = {
   refs: number;
 };
 
+type SolveTurnstileResult = {
+  clicked: boolean;
+  status: "clicked" | "solved" | "not-found";
+};
+
 const watchedPages = new WeakMap<Page, PageWatch>();
 
 function normalizeOptions(
@@ -201,6 +210,8 @@ function normalizeOptions(
     clickDelayMs: options.clickDelayMs ?? DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
     mouseMoveSteps: options.mouseMoveSteps ?? DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
     waitAfterClickMs: options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
+    clickCooldownMs: options.clickCooldownMs ?? 8000,
+    maxClickCooldownMs: options.maxClickCooldownMs ?? 60000,
     logger: options.logger,
   };
 }
@@ -372,6 +383,8 @@ async function clickTurnstileLocators(
   options: ClickBehaviorOptions,
 ): Promise<boolean> {
   for (const selector of selectors) {
+    if (isOptionalResponseSelector(selector)) continue;
+
     const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
 
@@ -382,7 +395,9 @@ async function clickTurnstileLocators(
         return true;
       }
 
-      const element = await target.elementHandle({ timeout: 1000 });
+      const element = await target
+        .elementHandle({ timeout: 1000 })
+        .catch(() => null);
 
       if (element) {
         try {
@@ -450,6 +465,28 @@ async function hasTurnstileFallback(page: Page): Promise<boolean> {
   }
 
   return false;
+}
+
+async function hasCloudflareIndicators(page: Page): Promise<boolean> {
+  return page
+    .evaluate(() => {
+      const selector =
+        'script[src*="cloudflare" i], script[src*="turnstile" i], ' +
+        'iframe[src*="cloudflare" i], iframe[src*="turnstile" i], ' +
+        '[class*="turnstile" i], [id*="turnstile" i], [data-sitekey], ' +
+        '[data-cf-ray], [data-ray]';
+
+      if (document.querySelector(selector)) return true;
+
+      const text = `${location.href} ${document.title} ${
+        document.body?.innerText?.slice(0, 2000) ?? ""
+      }`;
+
+      return /cloudflare|turnstile|checking your browser|verify you are human/i.test(
+        text,
+      );
+    })
+    .catch(() => true);
 }
 
 async function clickTurnstileFallback(
@@ -685,6 +722,17 @@ async function getCloudflarePageData(
         }
       };
 
+      const safeDocumentCookieNames = (): string[] => {
+        try {
+          return document.cookie
+            .split(";")
+            .map((part) => part.trim().split("=")[0])
+            .filter(Boolean);
+        } catch (_error) {
+          return [];
+        }
+      };
+
       const challengeOptions = (() => {
         try {
           const value = (window as Window & { _cf_chl_opt?: unknown })._cf_chl_opt;
@@ -708,10 +756,7 @@ async function getCloudflarePageData(
       return {
         url: location.href,
         userAgent: navigator.userAgent,
-        documentCookieNames: document.cookie
-          .split(";")
-          .map((part) => part.trim().split("=")[0])
-          .filter(Boolean),
+        documentCookieNames: safeDocumentCookieNames(),
         turnstile: {
           present,
           solved: tokens.length > 0,
@@ -759,6 +804,8 @@ export async function hasTurnstile({
   }
 
   if (!includeFallback) return false;
+
+  if (!(await hasCloudflareIndicators(page))) return false;
 
   return hasTurnstileFallback(page);
 }
@@ -853,7 +900,7 @@ async function solveTurnstileOnce({
   clickDelayMs = DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
   mouseMoveSteps = DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
   waitAfterClickMs = DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
-}: CheckTurnstileOptions): Promise<boolean> {
+}: CheckTurnstileOptions): Promise<SolveTurnstileResult> {
   const clickOptions = clickOptionsFromCheckOptions({
     foreground,
     clickDelayMs,
@@ -861,7 +908,9 @@ async function solveTurnstileOnce({
     waitAfterClickMs,
   });
 
-  if (await isTurnstileSolved({ page }).catch(() => false)) return false;
+  if (await isTurnstileSolved({ page }).catch(() => false)) {
+    return { clicked: false, status: "solved" };
+  }
 
   if (
     await clickTurnstileLocators(
@@ -871,10 +920,18 @@ async function solveTurnstileOnce({
       clickOptions,
     )
   ) {
-    return true;
+    return { clicked: true, status: "clicked" };
   }
 
-  return clickTurnstileFallback(page, clickOptions);
+  if (!(await hasCloudflareIndicators(page))) {
+    return { clicked: false, status: "not-found" };
+  }
+
+  if (await clickTurnstileFallback(page, clickOptions)) {
+    return { clicked: true, status: "clicked" };
+  }
+
+  return { clicked: false, status: "not-found" };
 }
 
 async function installPageChangeSignals(
@@ -907,7 +964,13 @@ async function installPageChangeSignals(
           window as unknown as Record<string, (() => Promise<void>) | undefined>
         )[state.bindingName ?? ""];
 
-        void callback?.().catch(() => undefined);
+        try {
+          const result = callback?.();
+
+          if (result && typeof result.catch === "function") {
+            void result.catch(() => undefined);
+          }
+        } catch (_error) {}
       }, 75);
     };
 
@@ -977,6 +1040,8 @@ function watchTurnstilePage(
   let closed = false;
   let running = false;
   let pending = false;
+  let clickAttempts = 0;
+  let nextClickAt = 0;
   let cancelScheduledRun: (() => void) | undefined;
   let signalDisposable: DisposableLike | undefined;
 
@@ -992,7 +1057,11 @@ function watchTurnstilePage(
     pending = false;
 
     try {
-      const clicked = await solveTurnstileOnce({
+      const now = Date.now();
+
+      if (now < nextClickAt) return;
+
+      const result = await solveTurnstileOnce({
         page,
         selectors: options.selectors,
         maxCandidatesPerSelector: options.maxCandidatesPerSelector,
@@ -1002,8 +1071,24 @@ function watchTurnstilePage(
         waitAfterClickMs: options.waitAfterClickMs,
       });
 
-      if (clicked) {
-        options.logger?.("turnstile candidate clicked");
+      if (result.status === "solved" || result.status === "not-found") {
+        clickAttempts = 0;
+        nextClickAt = 0;
+        return;
+      }
+
+      if (result.clicked) {
+        clickAttempts++;
+
+        const cooldown = Math.min(
+          options.maxClickCooldownMs,
+          options.clickCooldownMs * Math.min(clickAttempts, 6),
+        );
+
+        nextClickAt = Date.now() + cooldown;
+        options.logger?.(
+          `turnstile candidate clicked; next retry in ${cooldown}ms`,
+        );
       }
     } catch (error) {
       options.logger?.(
