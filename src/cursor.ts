@@ -3,12 +3,15 @@ import type {
   ElementHandle,
   Locator,
   Page,
+  CDPSession,
 } from "patchright";
 
 export type CursorPoint = {
   x: number;
   y: number;
 };
+
+export type TimedVector = CursorPoint & { timestamp: number };
 
 export type CursorBox = CursorPoint & {
   width: number;
@@ -65,16 +68,10 @@ declare module "patchright" {
 
 const cursorContexts = new WeakSet<BrowserContext>();
 const DEFAULT_OVERSHOOT_THRESHOLD = 500;
-const DEFAULT_MOVE_STEP_LENGTH = 14;
 
 function wait(page: Page, ms: number | undefined): Promise<void> {
   if (!ms || ms <= 0) return Promise.resolve();
-
   return page.waitForTimeout(ms).catch(() => undefined);
-}
-
-function randomBetween(min: number, max: number): number {
-  return min + Math.random() * (max - min);
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -83,6 +80,42 @@ function clamp(value: number, min: number, max: number): number {
 
 function distance(left: CursorPoint, right: CursorPoint): number {
   return Math.hypot(right.x - left.x, right.y - left.y);
+}
+
+const sub = (a: CursorPoint, b: CursorPoint): CursorPoint => ({ x: a.x - b.x, y: a.y - b.y });
+const mult = (a: CursorPoint, b: number): CursorPoint => ({ x: a.x * b, y: a.y * b });
+const add = (a: CursorPoint, b: CursorPoint): CursorPoint => ({ x: a.x + b.x, y: a.y + b.y });
+const perpendicular = (a: CursorPoint): CursorPoint => ({ x: a.y, y: -1 * a.x });
+const magnitude = (a: CursorPoint): number => Math.hypot(a.x, a.y);
+const unit = (a: CursorPoint): CursorPoint => {
+  const mag = magnitude(a);
+  return mag === 0 ? { x: 0, y: 0 } : { x: a.x / mag, y: a.y / mag };
+};
+const setMagnitude = (a: CursorPoint, amount: number): CursorPoint => mult(unit(a), amount);
+
+const direction = (a: CursorPoint, b: CursorPoint): CursorPoint => sub(b, a);
+
+const extrapolate = (a: CursorPoint, b: CursorPoint): CursorPoint => add(b, sub(b, a));
+
+function randomVectorOnLine(a: CursorPoint, b: CursorPoint): CursorPoint {
+  const vec = direction(a, b);
+  const multiplier = Math.random();
+  return add(a, mult(vec, multiplier));
+}
+
+function generateBezierAnchors(
+  a: CursorPoint,
+  b: CursorPoint,
+  spread: number
+): [CursorPoint, CursorPoint] {
+  const side = Math.round(Math.random()) === 1 ? 1 : -1;
+  const calc = (): CursorPoint => {
+    const randMid = randomVectorOnLine(a, b);
+    const normalV = setMagnitude(perpendicular(direction(a, randMid)), spread);
+    const choice = mult(normalV, side);
+    return randomVectorOnLine(randMid, add(randMid, choice));
+  };
+  return [calc(), calc()].sort((a, b) => a.x - b.x) as [CursorPoint, CursorPoint];
 }
 
 function cubicBezier(
@@ -110,68 +143,110 @@ function cubicBezier(
   };
 }
 
+function bezierCurveSpeed(
+  t: number,
+  P0: CursorPoint,
+  P1: CursorPoint,
+  P2: CursorPoint,
+  P3: CursorPoint
+): number {
+  const B1 = 3 * (1 - t) ** 2 * (P1.x - P0.x) + 6 * (1 - t) * t * (P2.x - P1.x) + 3 * t ** 2 * (P3.x - P2.x);
+  const B2 = 3 * (1 - t) ** 2 * (P1.y - P0.y) + 6 * (1 - t) * t * (P2.y - P1.y) + 3 * t ** 2 * (P3.y - P2.y);
+  return Math.sqrt(B1 ** 2 + B2 ** 2);
+}
+
+function fitts(distance: number, width: number): number {
+  return Math.log2(distance / width + 1);
+}
+
+function generateTimestamps(
+  vectors: CursorPoint[],
+  P0: CursorPoint,
+  P1: CursorPoint,
+  P2: CursorPoint,
+  P3: CursorPoint,
+  options?: CursorMoveOptions
+): TimedVector[] {
+  const speed = options?.moveSpeed && options.moveSpeed > 0 ? (25 / options.moveSpeed) : (Math.random() * 0.5 + 0.5);
+  const timeToMove = (p0: CursorPoint, p1: CursorPoint, p2: CursorPoint, p3: CursorPoint, samples: number): number => {
+    let total = 0;
+    const dt = 1 / samples;
+
+    for (let t = 0; t < 1; t += dt) {
+      const v1 = bezierCurveSpeed(t * dt, p0, p1, p2, p3);
+      const v2 = bezierCurveSpeed(t, p0, p1, p2, p3);
+      total += (v1 + v2) * dt / 2;
+    }
+
+    return Math.round(total / speed);
+  };
+
+  const timedVectors: TimedVector[] = [];
+
+  for (let i = 0; i < vectors.length; i++) {
+    if (i === 0) {
+      timedVectors.push({ ...vectors[i], timestamp: Date.now() });
+    } else {
+      const p0 = vectors[i - 1];
+      const p1 = vectors[i];
+      const p2 = i + 1 < vectors.length ? vectors[i + 1] : extrapolate(p0, p1);
+      const p3 = i + 2 < vectors.length ? vectors[i + 2] : extrapolate(p1, p2);
+      const time = timeToMove(p0, p1, p2, p3, vectors.length);
+
+      timedVectors.push({
+        ...vectors[i],
+        timestamp: timedVectors[i - 1].timestamp + time
+      });
+    }
+  }
+
+  return timedVectors;
+}
+
 function movementPath(
   start: CursorPoint,
   end: CursorPoint,
   options: CursorMoveOptions | undefined,
-): CursorPoint[] {
+): TimedVector[] {
   const length = distance(start, end);
-  if (length < 1) return [end];
+  if (length < 1) return [{ ...end, timestamp: Date.now() }];
 
-  const stepLength = options?.moveSpeed && options.moveSpeed > 0
-    ? options.moveSpeed
-    : randomBetween(DEFAULT_MOVE_STEP_LENGTH * 0.75, DEFAULT_MOVE_STEP_LENGTH * 1.5);
-  const steps = clamp(Math.ceil(length / stepLength), 8, 90);
-  const angle = Math.atan2(end.y - start.y, end.x - start.x);
-  const perpendicular = angle + Math.PI / 2;
-  const spread = clamp(length * randomBetween(0.08, 0.22), 8, 120);
-  const controlA = {
-    x:
-      start.x +
-      (end.x - start.x) * randomBetween(0.2, 0.45) +
-      Math.cos(perpendicular) * randomBetween(-spread, spread),
-    y:
-      start.y +
-      (end.y - start.y) * randomBetween(0.2, 0.45) +
-      Math.sin(perpendicular) * randomBetween(-spread, spread),
-  };
-  const controlB = {
-    x:
-      start.x +
-      (end.x - start.x) * randomBetween(0.55, 0.85) +
-      Math.cos(perpendicular) * randomBetween(-spread, spread),
-    y:
-      start.y +
-      (end.y - start.y) * randomBetween(0.55, 0.85) +
-      Math.sin(perpendicular) * randomBetween(-spread, spread),
-  };
+  const minSpread = 2;
+  const maxSpread = 200;
+  const spread = clamp(length, minSpread, maxSpread);
+  const [controlA, controlB] = generateBezierAnchors(start, end, spread);
+
+  const minSteps = 25;
+  const targetWidth = 100;
+  const speed = options?.moveSpeed && options.moveSpeed > 0 ? (25 / options.moveSpeed) : Math.random();
+  const baseTime = speed * minSteps;
+  const steps = clamp(Math.ceil((fitts(length, targetWidth) + baseTime) * 3), 8, 200);
+
   const points: CursorPoint[] = [];
 
   for (let step = 1; step <= steps; step++) {
-    points.push(cubicBezier(start, controlA, controlB, end, step / steps));
+    const point = cubicBezier(start, controlA, controlB, end, step / steps);
+    points.push({
+      x: Math.max(0, point.x),
+      y: Math.max(0, point.y)
+    });
   }
 
-  return points;
+  return generateTimestamps(points, start, controlA, controlB, end, options);
 }
 
-function overshootPoint(start: CursorPoint, end: CursorPoint): CursorPoint {
+function overshootPoint(start: CursorPoint, end: CursorPoint, radius: number = 120): CursorPoint {
   const length = distance(start, end);
   if (length < 1) return end;
 
-  const unitX = (end.x - start.x) / length;
-  const unitY = (end.y - start.y) / length;
-  const overshoot = randomBetween(8, 24);
-  const sideways = randomBetween(-8, 8);
-
-  return {
-    x: end.x + unitX * overshoot - unitY * sideways,
-    y: end.y + unitY * overshoot + unitX * sideways,
-  };
+  const a = Math.random() * 2 * Math.PI;
+  const rad = radius * Math.sqrt(Math.random());
+  const vector = { x: rad * Math.cos(a), y: rad * Math.sin(a) };
+  return add(end, vector);
 }
 
 function isCursorBox(value: unknown): value is CursorBox {
   const box = value as CursorBox;
-
   return Boolean(
     value &&
       typeof value === "object" &&
@@ -184,7 +259,6 @@ function isCursorBox(value: unknown): value is CursorBox {
 
 function isCursorPoint(value: unknown): value is CursorPoint {
   const point = value as CursorPoint;
-
   return Boolean(
     value &&
       typeof value === "object" &&
@@ -196,7 +270,6 @@ function isCursorPoint(value: unknown): value is CursorPoint {
 
 function isLocator(value: unknown): value is Locator {
   const locator = value as Locator;
-
   return Boolean(
     value &&
       typeof value === "object" &&
@@ -207,7 +280,6 @@ function isLocator(value: unknown): value is Locator {
 
 function isElementHandle(value: unknown): value is ElementHandle<Element> {
   const handle = value as ElementHandle<Element>;
-
   return Boolean(
     value &&
       typeof value === "object" &&
@@ -304,15 +376,34 @@ export function createCursor(
   start: CursorPoint = { x: 0, y: 0 },
 ): RealCursor {
   let location = { ...start };
+  let cdpSessionPromise: Promise<CDPSession> | null = null;
+
+  const getCdp = async (): Promise<CDPSession> => {
+    if (!cdpSessionPromise) {
+      cdpSessionPromise = page.context().newCDPSession(page);
+    }
+    return await cdpSessionPromise;
+  };
 
   const moveDirect = async (
     destination: CursorPoint,
     options?: CursorMoveOptions,
   ): Promise<void> => {
     const path = movementPath(location, destination, options);
+    const cdp = await getCdp();
 
     for (const point of path) {
-      await page.mouse.move(point.x, point.y);
+      try {
+        await cdp.send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: point.x,
+          y: point.y,
+          timestamp: point.timestamp,
+        });
+      } catch (err) {
+        if (!page.isClosed()) throw err;
+        return;
+      }
     }
 
     location = { ...destination };
@@ -335,6 +426,24 @@ export function createCursor(
       ? moveDelay
       : moveDelay * Math.random();
     await wait(page, delay);
+  };
+
+  const mouseButtonAction = async (
+    action: "mousePressed" | "mouseReleased",
+    options?: Pick<CursorClickOptions, "button" | "clickCount">
+  ): Promise<void> => {
+    const cdp = await getCdp();
+    try {
+      await cdp.send("Input.dispatchMouseEvent", {
+        type: action,
+        x: location.x,
+        y: location.y,
+        button: options?.button || "left",
+        clickCount: options?.clickCount || 1,
+      });
+    } catch (err) {
+      if (!page.isClosed()) throw err;
+    }
   };
 
   const cursor: RealCursor = {
@@ -398,23 +507,85 @@ export function createCursor(
     moveTo,
 
     mouseDown: async (options = {}): Promise<void> => {
-      const mouseOptions: Parameters<Page["mouse"]["down"]>[0] = {};
-      if (options.button) mouseOptions.button = options.button;
-      if (options.clickCount) mouseOptions.clickCount = options.clickCount;
-
-      await page.mouse.down(mouseOptions);
+      await mouseButtonAction("mousePressed", options);
     },
 
     mouseUp: async (options = {}): Promise<void> => {
-      const mouseOptions: Parameters<Page["mouse"]["up"]>[0] = {};
-      if (options.button) mouseOptions.button = options.button;
-      if (options.clickCount) mouseOptions.clickCount = options.clickCount;
-
-      await page.mouse.up(mouseOptions);
+      await mouseButtonAction("mouseReleased", options);
     },
   };
 
   return cursor;
+}
+
+export async function installMouseHelper(page: Page): Promise<void> {
+  const attachListener = (): void => {
+    if (document.getElementById('p-mouse-pointer')) return;
+    const box = document.createElement('p-mouse-pointer');
+    const styleElement = document.createElement('style');
+    styleElement.innerHTML = `
+      p-mouse-pointer {
+        pointer-events: none;
+        position: absolute;
+        top: 0;
+        z-index: 10000;
+        left: 0;
+        width: 20px;
+        height: 20px;
+        background: rgba(0,0,0,.4);
+        border: 1px solid white;
+        border-radius: 10px;
+        box-sizing: border-box;
+        margin: -10px 0 0 -10px;
+        padding: 0;
+        transition: background .2s, border-radius .2s, border-color .2s;
+      }
+      p-mouse-pointer.button-1 {
+        transition: none;
+        background: rgba(0,0,0,0.9);
+      }
+      p-mouse-pointer.button-2 {
+        transition: none;
+        border-color: rgba(0,0,255,0.9);
+      }
+      p-mouse-pointer.button-3 {
+        transition: none;
+        border-radius: 4px;
+      }
+      p-mouse-pointer.button-4 {
+        transition: none;
+        border-color: rgba(255,0,0,0.9);
+      }
+      p-mouse-pointer.button-5 {
+        transition: none;
+        border-color: rgba(0,255,0,0.9);
+      }
+      p-mouse-pointer-hide {
+        display: none;
+      }
+    `;
+    document.head.appendChild(styleElement);
+    document.body.appendChild(box);
+
+    document.addEventListener('mousemove', (event: MouseEvent) => {
+      box.style.left = `${event.pageX}px`;
+      box.style.top = `${event.pageY}px`;
+      box.classList.remove('p-mouse-pointer-hide');
+    }, true);
+
+    document.addEventListener('mousedown', (event: MouseEvent) => {
+      box.classList.add(`button-${event.which}`);
+      box.classList.remove('p-mouse-pointer-hide');
+    }, true);
+
+    document.addEventListener('mouseup', (event: MouseEvent) => {
+      box.classList.remove(`button-${event.which}`);
+      box.classList.remove('p-mouse-pointer-hide');
+    }, true);
+  };
+
+  await page.addInitScript(`(${attachListener.toString()})();`);
+  await page.evaluate(attachListener).catch(() => undefined);
 }
 
 export function installRealCursor(page: Page): RealCursor {

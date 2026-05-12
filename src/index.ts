@@ -28,6 +28,7 @@ export {
 export { getHeadlessUserAgent } from "./headless.js";
 export {
   createCursor,
+  installMouseHelper,
   installRealCursor,
   installRealCursorContext,
 } from "./cursor.js";
@@ -137,6 +138,16 @@ function wrapBrowser(
             defaultUserAgent,
           );
           const context = await target.newContext(contextOptions);
+          await context.addInitScript(`
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(MouseEvent.prototype, 'screenX', {
+              get: function () { return this.clientX + window.screenX; }
+            });
+            Object.defineProperty(MouseEvent.prototype, 'screenY', {
+              get: function () { return this.clientY + window.screenY; }
+            });
+          `);
           installRealCursorContext(context);
 
           const turnstileOption = turnstile ?? defaultTurnstile;
@@ -158,6 +169,16 @@ function wrapBrowser(
             defaultUserAgent,
           );
           const page = await target.newPage(pageOptions);
+          await page.context().addInitScript(`
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(MouseEvent.prototype, 'screenX', {
+              get: function () { return this.clientX + window.screenX; }
+            });
+            Object.defineProperty(MouseEvent.prototype, 'screenY', {
+              get: function () { return this.clientY + window.screenY; }
+            });
+          `);
           installRealCursorContext(page.context());
           installRealCursor(page);
 
@@ -190,10 +211,30 @@ function wrapChromium(
           const { patchrightOptions, turnstile } =
             splitTurnstileOption(options);
           const contextOptions = withHeadlessUserAgent(patchrightOptions);
+          const launchArgs = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process,AutomationControlled',
+            '--disable-search-engine-choice-screen',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            ...(contextOptions?.args || []),
+          ];
+          const finalOptions = { ...contextOptions, args: launchArgs };
+
           const context = await target.launchPersistentContext(
             userDataDir,
-            contextOptions,
+            finalOptions,
           );
+          await context.addInitScript(`
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(MouseEvent.prototype, 'screenX', {
+              get: function () { return this.clientX + window.screenX; }
+            });
+            Object.defineProperty(MouseEvent.prototype, 'screenY', {
+              get: function () { return this.clientY + window.screenY; }
+            });
+          `);
           installRealCursorContext(context);
 
           if (turnstile) {
@@ -212,7 +253,18 @@ function wrapChromium(
             patchrightOptions?.headless === false
               ? undefined
               : getHeadlessUserAgent(patchrightOptions);
-          const browser = await target.launch(patchrightOptions);
+              
+          const launchArgs = [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process,AutomationControlled',
+            '--disable-search-engine-choice-screen',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            ...(patchrightOptions?.args || []),
+          ];
+          const finalOptions = { ...patchrightOptions, args: launchArgs };
+
+          const browser = await target.launch(finalOptions);
 
           return wrapBrowser(browser, turnstile, defaultUserAgent);
         };

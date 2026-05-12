@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 - 2026-05-12
+
+- Completely overhauled `page.realCursor` to use 100% authentic `ghost-cursor` math including Fitts's Law and accurate Bezier curve timestamps.
+- Switched internal mouse movement to use `CDPSession` (`Input.dispatchMouseEvent`) to send real timestamps, effectively bypassing advanced bot detection heuristics.
+- Added `installMouseHelper` to inject a visual cursor tracker for debugging in non-headless mode.
+- Integrated `puppeteer-real-browser` stealth techniques to significantly improve evasion.
+- Added `addInitScript` to spoof `MouseEvent.prototype.screenX` and `screenY` to prevent coordinate leaking.
+- Hardened Chromium launch arguments by forcing `--disable-features=IsolateOrigins,site-per-process,AutomationControlled`, `--no-sandbox`, and `--disable-dev-shm-usage`.
+
 ## 0.6.1 - 2026-05-12
 
 - Added a built-in Patchright-compatible real cursor and attached it as `page.realCursor` / `page.realClick`.
