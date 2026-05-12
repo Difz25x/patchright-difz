@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 - 2026-05-12
+
+- Added a built-in Patchright-compatible real cursor and attached it as `page.realCursor` / `page.realClick`.
+- Updated Turnstile clicking to use the built-in real cursor while preserving the existing click-point targeting.
+- Removed the Cloudflare-indicator guard before fallback Turnstile box scans.
+
 ## 0.6.0 - 2026-05-12
 
 - Added `getCloudflareData({ include })` toggles for cookies, `cf_clearance`, tokens, responses, widgets, iframes, scripts, storage, Ray IDs, challenge fields, challenge options, URL, user agent, and document cookie names.

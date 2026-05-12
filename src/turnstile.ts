@@ -4,6 +4,7 @@ import type {
   Locator,
   Page,
 } from "patchright";
+import { installRealCursor } from "./cursor.js";
 
 type BoundingBox = {
   x: number;
@@ -334,16 +335,13 @@ async function clickBox(
 
   const point = getClickPoint(box);
   await preparePageForClick(page, options);
-  await page.mouse.move(point.x, point.y, {
-    steps: options.mouseMoveSteps,
+  const cursor = installRealCursor(page);
+
+  await cursor.click(point, {
+    moveSpeed: Math.max(1, options.mouseMoveSteps),
+    overshootThreshold: 420,
+    waitForClick: options.clickDelayMs,
   });
-  await page.mouse.down();
-
-  if (options.clickDelayMs > 0) {
-    await page.waitForTimeout(options.clickDelayMs).catch(() => undefined);
-  }
-
-  await page.mouse.up();
 
   if (options.waitAfterClickMs > 0) {
     await page.waitForTimeout(options.waitAfterClickMs).catch(() => undefined);
@@ -391,7 +389,24 @@ async function clickLocatorBox(
   const point = getClickPoint(box);
   await preparePageForClick(page, options);
 
-  const clickedByLocator = await locator
+  const clickedByCursor = await installRealCursor(page)
+    .click(point, {
+      moveSpeed: Math.max(1, options.mouseMoveSteps),
+      overshootThreshold: 420,
+      waitForClick: options.clickDelayMs,
+    })
+    .then(() => true)
+    .catch(() => false);
+
+  if (clickedByCursor) {
+    if (options.waitAfterClickMs > 0) {
+      await page.waitForTimeout(options.waitAfterClickMs).catch(() => undefined);
+    }
+
+    return true;
+  }
+
+  return locator
     .click({
       force: true,
       timeout: 1000,
@@ -404,16 +419,6 @@ async function clickLocatorBox(
     })
     .then(() => true)
     .catch(() => false);
-
-  if (clickedByLocator) {
-    if (options.waitAfterClickMs > 0) {
-      await page.waitForTimeout(options.waitAfterClickMs).catch(() => undefined);
-    }
-
-    return true;
-  }
-
-  return clickBox(page, box, options);
 }
 
 async function clickElementOrParentBox(
@@ -536,28 +541,6 @@ async function hasTurnstileFallback(page: Page): Promise<boolean> {
   }
 
   return false;
-}
-
-async function hasCloudflareIndicators(page: Page): Promise<boolean> {
-  return page
-    .evaluate(() => {
-      const selector =
-        'script[src*="cloudflare" i], script[src*="turnstile" i], ' +
-        'iframe[src*="cloudflare" i], iframe[src*="turnstile" i], ' +
-        '[class*="turnstile" i], [id*="turnstile" i], [data-sitekey], ' +
-        '[data-cf-ray], [data-ray]';
-
-      if (document.querySelector(selector)) return true;
-
-      const text = `${location.href} ${document.title} ${
-        document.body?.innerText?.slice(0, 2000) ?? ""
-      }`;
-
-      return /cloudflare|turnstile|checking your browser|verify you are human/i.test(
-        text,
-      );
-    })
-    .catch(() => true);
 }
 
 async function isManagedChallengePage(page: Page): Promise<boolean> {
@@ -894,8 +877,6 @@ export async function hasTurnstile({
 
   if (!includeFallback) return false;
 
-  if (!(await hasCloudflareIndicators(page))) return false;
-
   return hasTurnstileFallback(page);
 }
 
@@ -1044,10 +1025,6 @@ async function solveTurnstileOnce({
     )
   ) {
     return { clicked: true, status: "clicked" };
-  }
-
-  if (!(await hasCloudflareIndicators(page))) {
-    return { clicked: false, status: "not-found" };
   }
 
   if (await clickTurnstileFallback(page, clickOptions)) {

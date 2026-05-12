@@ -39,6 +39,16 @@ normal Chrome user agent before the first request. This applies to
 `PATCHRIGHT_DIFZ_HEADLESS_USER_AGENT=0` to keep Patchright's default headless
 user agent, or set it to a full user-agent string to override the default.
 
+Pages created through this wrapper also get a built-in human-style cursor:
+
+```ts
+await page.realClick?.("#submit");
+await page.realCursor?.moveTo({ x: 300, y: 240 });
+```
+
+The Turnstile helper uses this cursor for mouse movement and click timing while
+keeping the existing Turnstile click-point calculation.
+
 You can also configure it:
 
 ```ts

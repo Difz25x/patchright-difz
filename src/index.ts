@@ -10,6 +10,10 @@ import {
   withDefaultUserAgent,
   withHeadlessUserAgent,
 } from "./headless.js";
+import {
+  installRealCursor,
+  installRealCursorContext,
+} from "./cursor.js";
 import { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 import { installTurnstileAutoSolver } from "./turnstile.js";
 import type { TurnstileOption } from "./turnstile.js";
@@ -22,6 +26,11 @@ export {
   clearSessionArtifacts,
 } from "./artifacts.js";
 export { getHeadlessUserAgent } from "./headless.js";
+export {
+  createCursor,
+  installRealCursor,
+  installRealCursorContext,
+} from "./cursor.js";
 export { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 export {
   checkTurnstile,
@@ -36,6 +45,15 @@ export type {
   ClearBrowserArtifactsResult,
   ClearSessionArtifactsOptions,
 } from "./artifacts.js";
+export type {
+  CursorBox,
+  CursorClickOptions,
+  CursorMoveOptions,
+  CursorPoint,
+  CursorTarget,
+  RealClick,
+  RealCursor,
+} from "./cursor.js";
 export type {
   CheckTurnstileOptions,
   CloudflareCookie,
@@ -119,6 +137,8 @@ function wrapBrowser(
             defaultUserAgent,
           );
           const context = await target.newContext(contextOptions);
+          installRealCursorContext(context);
+
           const turnstileOption = turnstile ?? defaultTurnstile;
 
           if (turnstileOption) {
@@ -138,6 +158,9 @@ function wrapBrowser(
             defaultUserAgent,
           );
           const page = await target.newPage(pageOptions);
+          installRealCursorContext(page.context());
+          installRealCursor(page);
+
           const turnstileOption = turnstile ?? defaultTurnstile;
 
           if (turnstileOption) {
@@ -171,6 +194,7 @@ function wrapChromium(
             userDataDir,
             contextOptions,
           );
+          installRealCursorContext(context);
 
           if (turnstile) {
             installTurnstileAutoSolver(context, turnstile);
