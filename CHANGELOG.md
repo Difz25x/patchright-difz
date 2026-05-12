@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.0 - 2026-05-12
+
+- Rewrited every code, and now it fixed most of the problem. Now it more stable and undetected.
+
 ## 0.7.1 - 2026-05-12
 
 - Improved patches to prevent detection by Cloudflare and other bot detection systems.

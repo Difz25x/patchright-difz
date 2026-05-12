@@ -1,9 +1,4 @@
-import type {
-  BrowserContext,
-  ElementHandle,
-  Locator,
-  Page,
-} from "patchright";
+import type { BrowserContext, ElementHandle, Locator, Page } from "patchright";
 import { installRealCursor } from "./cursor.js";
 
 type BoundingBox = {
@@ -65,31 +60,10 @@ export type CloudflareDataOptions = {
   context?: BrowserContext;
   urls?: string | string[];
   minTokenLength?: number;
-  include?: CloudflareDataIncludeOptions;
+  timeoutMs?: number;
 };
 
-type BrowserCookie = Awaited<
-  ReturnType<BrowserContext["cookies"]>
->[number];
-
-export type CloudflareDataIncludeOptions = {
-  url?: boolean;
-  userAgent?: boolean;
-  documentCookieNames?: boolean;
-  cookies?: boolean;
-  cloudflareCookies?: boolean;
-  clearanceCookie?: boolean;
-  cfClearance?: boolean;
-  tokens?: boolean;
-  responses?: boolean;
-  widgets?: boolean;
-  iframes?: boolean;
-  scripts?: boolean;
-  challengeFields?: boolean;
-  rayIds?: boolean;
-  challengeOptions?: boolean;
-  storage?: boolean;
-};
+type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
 
 export type CloudflareCookie = {
   name: string;
@@ -125,13 +99,13 @@ export type CloudflareStorageEntry = {
 };
 
 export type CloudflareData = {
-  url?: string;
-  userAgent?: string;
+  url: string;
+  userAgent: string;
   documentCookieNames: string[];
   cookies: CloudflareCookie[];
   cloudflareCookies: CloudflareCookie[];
-  clearanceCookie?: string;
-  cfClearance?: string;
+  clearanceCookie: string;
+  cfClearance: string;
   turnstile: {
     present: boolean;
     solved: boolean;
@@ -182,7 +156,7 @@ const TURNSTILE_RESPONSE_SELECTORS = OPTIONAL_TURNSTILE_RESPONSE_SELECTORS;
 const CLOUDFLARE_FIELD_SELECTOR =
   'input[name*="cf-" i], input[name*="cf_" i], input[name*="turnstile" i], ' +
   'textarea[name*="cf-" i], textarea[name*="cf_" i], textarea[name*="turnstile" i], ' +
-  '[data-ray], [data-cf-ray], [data-sitekey], [data-cf-turnstile-response]';
+  "[data-ray], [data-cf-ray], [data-sitekey], [data-cf-turnstile-response]";
 
 const FALLBACK_SELECTORS = ["iframe", "div", "button", '[role="checkbox"]'];
 const FALLBACK_LIMIT = 80;
@@ -221,29 +195,7 @@ type SolveTurnstileResult = {
   status: "clicked" | "managed-challenge" | "solved" | "not-found";
 };
 
-type NormalizedCloudflareDataIncludes = Required<
-  Omit<CloudflareDataIncludeOptions, "cfClearance">
->;
-
 const watchedPages = new WeakMap<Page, PageWatch>();
-
-const DEFAULT_CLOUDFLARE_DATA_INCLUDES: NormalizedCloudflareDataIncludes = {
-  url: true,
-  userAgent: true,
-  documentCookieNames: true,
-  cookies: true,
-  cloudflareCookies: true,
-  clearanceCookie: true,
-  tokens: true,
-  responses: true,
-  widgets: true,
-  iframes: true,
-  scripts: true,
-  challengeFields: true,
-  rayIds: true,
-  challengeOptions: true,
-  storage: true,
-};
 
 function normalizeOptions(
   option: TurnstileOption | undefined,
@@ -257,24 +209,13 @@ function normalizeOptions(
     maxCandidatesPerSelector: options.maxCandidatesPerSelector ?? 5,
     foreground: options.foreground ?? DEFAULT_CLICK_BEHAVIOR.foreground,
     clickDelayMs: options.clickDelayMs ?? DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
-    mouseMoveSteps: options.mouseMoveSteps ?? DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
-    waitAfterClickMs: options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
+    mouseMoveSteps:
+      options.mouseMoveSteps ?? DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
+    waitAfterClickMs:
+      options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
     clickCooldownMs: options.clickCooldownMs ?? 8000,
     maxClickCooldownMs: options.maxClickCooldownMs ?? 60000,
     logger: options.logger,
-  };
-}
-
-function normalizeCloudflareDataIncludes(
-  include: CloudflareDataIncludeOptions | undefined,
-): NormalizedCloudflareDataIncludes {
-  return {
-    ...DEFAULT_CLOUDFLARE_DATA_INCLUDES,
-    ...include,
-    clearanceCookie:
-      include?.clearanceCookie ??
-      include?.cfClearance ??
-      DEFAULT_CLOUDFLARE_DATA_INCLUDES.clearanceCookie,
   };
 }
 
@@ -351,7 +292,9 @@ async function clickBox(
 }
 
 function looksLikeTurnstileBox(box: BoundingBox): boolean {
-  return box.width >= 260 && box.width <= 340 && box.height >= 35 && box.height <= 90;
+  return (
+    box.width >= 260 && box.width <= 340 && box.height >= 35 && box.height <= 90
+  );
 }
 
 function unique(values: string[]): string[] {
@@ -362,7 +305,9 @@ function isCloudflareCookie(cookie: BrowserCookie): boolean {
   return /^(?:__cf|_cf|cf_)/i.test(cookie.name);
 }
 
-function normalizeCookieUrls(urls: string | string[] | undefined): string[] | undefined {
+function normalizeCookieUrls(
+  urls: string | string[] | undefined,
+): string[] | undefined {
   if (!urls) return undefined;
   return Array.isArray(urls) ? urls : [urls];
 }
@@ -377,6 +322,42 @@ function scheduleSoon(callback: () => void, delayMs = 75): () => void {
   return () => clearTimeout(timeout);
 }
 
+async function isTurnstileFrameReady(
+  elementOrLocator: Locator | ElementHandle<Element>,
+): Promise<boolean> {
+  const element = (
+    "elementHandle" in elementOrLocator
+      ? await elementOrLocator.elementHandle().catch(() => null)
+      : elementOrLocator
+  ) as ElementHandle<Element> | null;
+
+  if (!element) return true;
+
+  const tagName = await element
+    .evaluate((e: any) => e.tagName?.toLowerCase() || "")
+    .catch(() => "");
+  let ready = true;
+
+  if (tagName === "iframe") {
+    const frame = await element.contentFrame().catch(() => null);
+    if (frame) {
+      ready = await frame
+        .waitForSelector('input[type="checkbox"]', {
+          state: "visible",
+          timeout: 15000,
+        })
+        .then(() => true)
+        .catch(() => false);
+    }
+  }
+
+  if ("elementHandle" in elementOrLocator && element) {
+    await element.dispose().catch(() => undefined);
+  }
+
+  return ready;
+}
+
 async function clickLocatorBox(
   page: Page,
   locator: Locator,
@@ -385,6 +366,10 @@ async function clickLocatorBox(
   const box = await locator.boundingBox({ timeout: 1000 }).catch(() => null);
 
   if (!box) return false;
+
+  if (!(await isTurnstileFrameReady(locator))) {
+    return false;
+  }
 
   const point = getClickPoint(box);
   await preparePageForClick(page, options);
@@ -400,7 +385,9 @@ async function clickLocatorBox(
 
   if (clickedByCursor) {
     if (options.waitAfterClickMs > 0) {
-      await page.waitForTimeout(options.waitAfterClickMs).catch(() => undefined);
+      await page
+        .waitForTimeout(options.waitAfterClickMs)
+        .catch(() => undefined);
     }
 
     return true;
@@ -431,8 +418,14 @@ async function clickElementOrParentBox(
   for (let depth = 0; depth < 8 && current; depth++) {
     const box = await current.boundingBox().catch(() => null);
 
-    if (box && looksLikeTurnstileBox(box) && (await clickBox(page, box, options))) {
-      return true;
+    if (box && looksLikeTurnstileBox(box)) {
+      if (!(await isTurnstileFrameReady(current))) {
+        return false;
+      }
+
+      if (await clickBox(page, box, options)) {
+        return true;
+      }
     }
 
     const parentHandle = await current
@@ -464,7 +457,11 @@ async function clickTurnstileLocators(
     const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
 
-    for (let index = 0; index < Math.min(count, maxCandidatesPerSelector); index++) {
+    for (
+      let index = 0;
+      index < Math.min(count, maxCandidatesPerSelector);
+      index++
+    ) {
       const target = locator.nth(index);
 
       if (await clickLocatorBox(page, target, options).catch(() => false)) {
@@ -505,11 +502,13 @@ async function hasTurnstileLocators(
     const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
 
-    for (let index = 0; index < Math.min(count, maxCandidatesPerSelector); index++) {
+    for (
+      let index = 0;
+      index < Math.min(count, maxCandidatesPerSelector);
+      index++
+    ) {
       const target = locator.nth(index);
-      const box = await target
-        .boundingBox({ timeout: 250 })
-        .catch(() => null);
+      const box = await target.boundingBox({ timeout: 250 }).catch(() => null);
 
       if (box && looksLikeTurnstileBox(box)) return true;
     }
@@ -549,20 +548,13 @@ async function isManagedChallengePage(page: Page): Promise<boolean> {
       const title = document.title || "";
       const bodyText = document.body?.innerText?.slice(0, 5000) || "";
       const locationText = location.href || "";
-      const challengeOptions = (window as Window & { _cf_chl_opt?: unknown })
-        ._cf_chl_opt;
       const text = `${title}\n${bodyText}\n${locationText}`;
 
-      return Boolean(
-        challengeOptions ||
-          (
-            /just a moment|security verification|checking your browser/i.test(
-              text,
-            ) &&
-            /cloudflare|verify you are not a bot|malicious bots|ray id/i.test(
-              text,
-            )
-          ),
+      return (
+        /just a moment|security verification|checking your browser/i.test(
+          text,
+        ) &&
+        /cloudflare|verify you are not a bot|malicious bots|ray id/i.test(text)
       );
     })
     .catch(() => false);
@@ -597,7 +589,8 @@ async function clickTurnstileFallback(
 
   candidates.sort((left, right) => {
     const leftScore = Math.abs(left.width - 300) + Math.abs(left.height - 65);
-    const rightScore = Math.abs(right.width - 300) + Math.abs(right.height - 65);
+    const rightScore =
+      Math.abs(right.width - 300) + Math.abs(right.height - 65);
 
     return leftScore - rightScore;
   });
@@ -613,14 +606,13 @@ async function getCloudflarePageData(
   page: Page,
   minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
 ): Promise<
-  Omit<CloudflareData, "cookies" | "cloudflareCookies" | "clearanceCookie">
+  Omit<
+    CloudflareData,
+    "cookies" | "cloudflareCookies" | "clearanceCookie" | "cfClearance"
+  >
 > {
   return page.evaluate(
-    ({
-      responseSelectors,
-      cloudflareFieldSelector,
-      minTokenLength,
-    }) => {
+    ({ responseSelectors, cloudflareFieldSelector, minTokenLength }) => {
       type ResponseData = TurnstileResponseData;
       type WidgetData = TurnstileWidgetData;
       type FieldData = CloudflareFieldData;
@@ -634,7 +626,10 @@ async function getCloudflarePageData(
       const sitekeys: string[] = [];
       const rayIds: string[] = [];
 
-      const pushUnique = (target: string[], value: string | null | undefined): void => {
+      const pushUnique = (
+        target: string[],
+        value: string | null | undefined,
+      ): void => {
         if (value && !target.includes(value)) target.push(value);
       };
 
@@ -667,11 +662,7 @@ async function getCloudflarePageData(
           value,
         };
 
-        if (
-          !responseData.some(
-            (existing) => existing.value === entry.value,
-          )
-        ) {
+        if (!responseData.some((existing) => existing.value === entry.value)) {
           responseData.push(entry);
         }
       };
@@ -733,22 +724,24 @@ async function getCloudflarePageData(
       });
 
       try {
-        document.querySelectorAll(cloudflareFieldSelector).forEach((element) => {
-          const value = valueFor(element).trim();
-          const name = element.getAttribute("name") ?? undefined;
-          const rayId =
-            element.getAttribute("data-ray") ??
-            element.getAttribute("data-cf-ray");
+        document
+          .querySelectorAll(cloudflareFieldSelector)
+          .forEach((element) => {
+            const value = valueFor(element).trim();
+            const name = element.getAttribute("name") ?? undefined;
+            const rayId =
+              element.getAttribute("data-ray") ??
+              element.getAttribute("data-cf-ray");
 
-          pushUnique(rayIds, rayId);
+            pushUnique(rayIds, rayId);
 
-          if (!value) return;
+            if (!value) return;
 
-          fields.push({
-            name,
-            value,
+            fields.push({
+              name,
+              value,
+            });
           });
-        });
       } catch (_error) {}
 
       const collectStorage = (storage: Storage): StorageEntry[] => {
@@ -756,7 +749,10 @@ async function getCloudflarePageData(
 
         for (let index = 0; index < storage.length; index++) {
           const key = storage.key(index);
-          if (!key || !/cloudflare|turnstile|cf[_-]|cfchl|cf_chl|challenge/i.test(key)) {
+          if (
+            !key ||
+            !/cloudflare|turnstile|cf[_-]|cfchl|cf_chl|challenge/i.test(key)
+          ) {
             continue;
           }
 
@@ -790,29 +786,17 @@ async function getCloudflarePageData(
         }
       };
 
-      const challengeOptions = (() => {
-        try {
-          const value = (window as Window & { _cf_chl_opt?: unknown })._cf_chl_opt;
-          return value === undefined
-            ? null
-            : JSON.parse(JSON.stringify(value)) as unknown;
-        } catch (_error) {
-          return null;
-        }
-      })();
+      const challengeOptions = null;
       const managedChallengeText = `${document.title || ""}\n${
         document.body?.innerText?.slice(0, 5000) ?? ""
       }\n${location.href}`;
       const managedChallenge = Boolean(
-        challengeOptions ||
-          (
-            /just a moment|security verification|checking your browser/i.test(
-              managedChallengeText,
-            ) &&
-            /cloudflare|verify you are not a bot|malicious bots|ray id/i.test(
-              managedChallengeText,
-            )
-          ),
+        /just a moment|security verification|checking your browser/i.test(
+          managedChallengeText,
+        ) &&
+        /cloudflare|verify you are not a bot|malicious bots|ray id/i.test(
+          managedChallengeText,
+        ),
       );
 
       const tokens = responseData
@@ -865,13 +849,7 @@ export async function hasTurnstile({
   maxCandidatesPerSelector = 5,
   includeFallback = true,
 }: HasTurnstileOptions): Promise<boolean> {
-  if (
-    await hasTurnstileLocators(
-      page,
-      selectors,
-      maxCandidatesPerSelector,
-    )
-  ) {
+  if (await hasTurnstileLocators(page, selectors, maxCandidatesPerSelector)) {
     return true;
   }
 
@@ -886,30 +864,62 @@ export async function isTurnstileSolved({
   urls,
   minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
 }: IsTurnstileSolvedOptions): Promise<boolean> {
-  const data = await getCloudflareData({
-    page,
-    context,
-    urls,
-    minTokenLength,
-  });
+  // Safe cookie check
+  if (context) {
+    const rawCookies = await context
+      .cookies(normalizeCookieUrls(urls))
+      .catch(() => []);
+    if (rawCookies.some((cookie) => cookie.name === "cf_clearance")) {
+      return true;
+    }
+  }
 
-  return Boolean(data.clearanceCookie) ||
-    data.turnstile.tokens.some((token) => token.trim().length >= minTokenLength);
+  if (!page) return false;
+
+  // Lightweight DOM check without heavy page.evaluate iteration
+  const state = await page
+    .evaluate((minLen) => {
+      const inputs = document.querySelectorAll(
+        '[name="cf-turnstile-response"], [name="turnstile-response"], [data-cf-turnstile-response]',
+      );
+      let tokenFound = false;
+      for (const el of inputs) {
+        const val =
+          (el as HTMLInputElement).value ||
+          el.getAttribute("data-cf-turnstile-response") ||
+          "";
+        if (val.trim().length >= minLen) {
+          tokenFound = true;
+          break;
+        }
+      }
+
+      const present =
+        document.querySelectorAll(
+          '.cf-turnstile, iframe[src*="challenges.cloudflare.com"]',
+        ).length > 0;
+      return { tokenFound, present };
+    }, minTokenLength)
+    .catch(() => ({ tokenFound: false, present: false }));
+
+  if (state.present && !state.tokenFound) {
+    return false;
+  }
+
+  return state.tokenFound;
 }
 
-export async function getCloudflareData({
+export async function _getCloudflareDataRaw({
   page,
   context = page?.context(),
   urls,
   minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
-  include,
 }: CloudflareDataOptions): Promise<CloudflareData> {
-  const includes = normalizeCloudflareDataIncludes(include);
   const pageData = page
     ? await getCloudflarePageData(page, minTokenLength)
     : {
-        url: undefined,
-        userAgent: undefined,
+        url: "",
+        userAgent: "",
         documentCookieNames: [],
         turnstile: {
           present: false,
@@ -933,11 +943,8 @@ export async function getCloudflareData({
           session: [],
         },
       };
-  const shouldReadCookies =
-    includes.cookies ||
-    includes.cloudflareCookies ||
-    includes.clearanceCookie;
-  const rawCookies = context && shouldReadCookies
+
+  const rawCookies = context
     ? await context.cookies(normalizeCookieUrls(urls)).catch(() => [])
     : [];
   const cloudflareCookieValues = rawCookies.filter(isCloudflareCookie);
@@ -947,43 +954,66 @@ export async function getCloudflareData({
   const cookieSolved = Boolean(clearanceCookie);
 
   return {
-    url: includes.url ? pageData.url : undefined,
-    userAgent: includes.userAgent ? pageData.userAgent : undefined,
-    documentCookieNames: includes.documentCookieNames
-      ? pageData.documentCookieNames
-      : [],
-    cookies: includes.cookies ? rawCookies.map(toCookieData) : [],
-    cloudflareCookies: includes.cloudflareCookies
-      ? cloudflareCookieValues.map(toCookieData)
-      : [],
-    clearanceCookie: includes.clearanceCookie
-      ? clearanceCookie?.value
-      : undefined,
-    cfClearance: includes.clearanceCookie ? clearanceCookie?.value : undefined,
+    url: pageData.url || "",
+    userAgent: pageData.userAgent || "",
+    documentCookieNames: pageData.documentCookieNames,
+    cookies: rawCookies.map(toCookieData),
+    cloudflareCookies: cloudflareCookieValues.map(toCookieData),
+    clearanceCookie: clearanceCookie?.value || "",
+    cfClearance: clearanceCookie?.value || "",
     turnstile: {
       ...pageData.turnstile,
       solved: pageData.turnstile.solved,
-      responses: includes.responses ? pageData.turnstile.responses : [],
-      tokens: includes.tokens ? unique(pageData.turnstile.tokens) : [],
+      responses: pageData.turnstile.responses,
+      tokens: unique(pageData.turnstile.tokens),
       sitekeys: unique(pageData.turnstile.sitekeys),
-      widgets: includes.widgets ? pageData.turnstile.widgets : [],
-      iframes: includes.iframes ? unique(pageData.turnstile.iframes) : [],
-      scripts: includes.scripts ? unique(pageData.turnstile.scripts) : [],
+      widgets: pageData.turnstile.widgets,
+      iframes: unique(pageData.turnstile.iframes),
+      scripts: unique(pageData.turnstile.scripts),
     },
     challenge: {
       ...pageData.challenge,
       cleared: cookieSolved,
-      fields: includes.challengeFields ? pageData.challenge.fields : [],
-      rayIds: includes.rayIds ? pageData.challenge.rayIds : [],
-      options: includes.challengeOptions ? pageData.challenge.options : null,
+      fields: pageData.challenge.fields,
+      rayIds: pageData.challenge.rayIds,
+      options: pageData.challenge.options,
     },
-    storage: includes.storage
-      ? pageData.storage
-      : {
-          local: [],
-          session: [],
-        },
+    storage: pageData.storage,
   };
+}
+
+export async function getCloudflareData(
+  options: CloudflareDataOptions,
+): Promise<CloudflareData> {
+  const { timeoutMs = 7000, page, context = options.page?.context() } = options;
+
+  // Wait indefinitely until it's solved (lightweight polling)
+  let solved = await isTurnstileSolved(options);
+  while (!solved) {
+    if (page) await page.waitForTimeout(500).catch(() => undefined);
+    else await new Promise((r) => setTimeout(r, 500));
+    solved = await isTurnstileSolved(options);
+  }
+
+  // Start 7s timeout to ensure cookies are fully set before snapshotting
+  const start = Date.now();
+  let hasClearance = false;
+  while (Date.now() - start < timeoutMs) {
+    if (context) {
+      const cookies = await context
+        .cookies(normalizeCookieUrls(options.urls))
+        .catch(() => []);
+      if (cookies.some((c) => c.name === "cf_clearance")) {
+        hasClearance = true;
+        break;
+      }
+    }
+    if (page) await page.waitForTimeout(500).catch(() => undefined);
+    else await new Promise((r) => setTimeout(r, 500));
+  }
+
+  // Take a single snapshot of all data at the end
+  return await _getCloudflareDataRaw(options);
 }
 
 export async function isCloudflareManagedChallenge({
@@ -1206,9 +1236,7 @@ function watchTurnstilePage(
         );
       }
     } catch (error) {
-      options.logger?.(
-        error instanceof Error ? error.message : String(error),
-      );
+      options.logger?.(error instanceof Error ? error.message : String(error));
     } finally {
       running = false;
       if (pending && !closed) schedule();

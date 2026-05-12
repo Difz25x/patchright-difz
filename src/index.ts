@@ -59,7 +59,6 @@ export type {
   CheckTurnstileOptions,
   CloudflareCookie,
   CloudflareData,
-  CloudflareDataIncludeOptions,
   CloudflareDataOptions,
   CloudflareFieldData,
   CloudflareStorageEntry,
