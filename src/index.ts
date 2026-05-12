@@ -17,6 +17,10 @@ import type { TurnstileOption } from "./turnstile.js";
 installMainWorldEvaluateDefaults();
 
 export * from "patchright";
+export {
+  clearBrowserArtifacts,
+  clearSessionArtifacts,
+} from "./artifacts.js";
 export { getHeadlessUserAgent } from "./headless.js";
 export { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 export {
@@ -24,16 +28,24 @@ export {
   getCloudflareData,
   hasTurnstile,
   installTurnstileAutoSolver,
+  isCloudflareManagedChallenge,
   isTurnstileSolved,
 } from "./turnstile.js";
+export type {
+  ClearBrowserArtifactsOptions,
+  ClearBrowserArtifactsResult,
+  ClearSessionArtifactsOptions,
+} from "./artifacts.js";
 export type {
   CheckTurnstileOptions,
   CloudflareCookie,
   CloudflareData,
+  CloudflareDataIncludeOptions,
   CloudflareDataOptions,
   CloudflareFieldData,
   CloudflareStorageEntry,
   HasTurnstileOptions,
+  IsCloudflareManagedChallengeOptions,
   IsTurnstileSolvedOptions,
   TurnstileResponseData,
   TurnstileAutoOptions,

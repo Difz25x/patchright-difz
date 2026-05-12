@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.0 - 2026-05-12
+
+- Added `getCloudflareData({ include })` toggles for cookies, `cf_clearance`, tokens, responses, widgets, iframes, scripts, storage, Ray IDs, challenge fields, challenge options, URL, user agent, and document cookie names.
+- Kept Turnstile `sitekeys`, `present`, `solved`, and challenge status fields always available.
+- Simplified Cloudflare data output by removing UI-location metadata such as selectors, element IDs, and class names.
+- Changed `clearanceCookie` to the `cf_clearance` string value, added `cfClearance` as an alias, and simplified cookie entries to string/number fields.
+
+## 0.5.3 - 2026-05-12
+
+- Added `clearSessionArtifacts` for manual cookies, storage, permission, and extra-header cleanup.
+- Added `clearBrowserArtifacts` for session cleanup plus page cache, CDP cache, and service-worker cleanup.
+- Exported artifact cleanup option/result types.
+
+## 0.5.2 - 2026-05-12
+
+- Added managed Cloudflare challenge detection for full-page verification screens.
+- Paused the Turnstile clicker when a managed challenge is detected instead of fallback-clicking page containers.
+- Added `isCloudflareManagedChallenge` and `data.challenge.managed` for diagnostics.
+
 ## 0.5.1 - 2026-05-12
 
 - Added Turnstile click cooldown/backoff so the watcher does not repeatedly click while a widget is still processing or reloading.

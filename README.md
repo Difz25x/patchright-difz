@@ -90,19 +90,32 @@ Turnstile and Cloudflare data helpers:
 import {
   getCloudflareData,
   hasTurnstile,
+  isCloudflareManagedChallenge,
   isTurnstileSolved,
 } from "patchright-difz";
 
 const exists = await hasTurnstile({ page });
 const solved = await isTurnstileSolved({ page });
-const data = await getCloudflareData({ page });
+const managedChallenge = await isCloudflareManagedChallenge({ page });
+const data = await getCloudflareData({
+  page,
+  include: {
+    cfClearance: true,
+    tokens: true,
+    responses: true,
+    cookies: false,
+    storage: false,
+  },
+});
 
 console.log({
   exists,
   solved,
+  managedChallenge,
   cookies: data.cloudflareCookies,
-  clearance: data.clearanceCookie,
+  clearance: data.cfClearance,
   cleared: data.challenge.cleared,
+  managed: data.challenge.managed,
   documentCookieNames: data.documentCookieNames,
   tokens: data.turnstile.tokens,
   sitekeys: data.turnstile.sitekeys,
@@ -116,12 +129,45 @@ iframe/script URLs, challenge fields, Ray IDs, and Cloudflare-related
 local/session storage keys. Pass `context` and `urls` when you only want cookie
 data for specific URLs:
 
+Use `include` to control optional data. `sitekeys`, Turnstile presence/solved
+state, and challenge status are always returned. UI-location metadata such as
+selectors, element IDs, and class names is not returned.
+
+Full-page Cloudflare managed challenges, such as "Just a moment" or
+"Performing security verification", are exposed through
+`isCloudflareManagedChallenge({ page })` and `data.challenge.managed`. The
+Turnstile clicker pauses on that state instead of clicking page containers.
+
 ```ts
 const data = await getCloudflareData({
   context,
   urls: ["https://example.com"],
 });
 ```
+
+## Artifact Cleanup
+
+For test isolation, you can manually clear browser/session artifacts without
+closing the context:
+
+```ts
+import {
+  clearBrowserArtifacts,
+  clearSessionArtifacts,
+} from "patchright-difz";
+
+await clearSessionArtifacts({ context });
+
+await clearBrowserArtifacts({
+  context,
+  page,
+  origins: ["https://example.com"],
+});
+```
+
+`clearSessionArtifacts` clears cookies, current-page storage, permissions, and
+extra HTTP headers by default. `clearBrowserArtifacts` also clears page Cache
+Storage, Chromium network cache when CDP is available, and service workers.
 
 ## Importing as `patchright`
 
