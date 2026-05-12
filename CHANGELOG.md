@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.1 - 2026-05-12
+
+- Improved patches to prevent detection by Cloudflare and other bot detection systems.
+
 ## 0.7.0 - 2026-05-12
 
 - Completely overhauled `page.realCursor` to use 100% authentic `ghost-cursor` math including Fitts's Law and accurate Bezier curve timestamps.
