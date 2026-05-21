@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.0 - 2026-05-12
+
+- Added more functionality to cursor.ts, see full documentation in README.md (Website coming soon)
+- Improved cursor detection to be more similar to a real mouse/cursor
+
 ## 0.8.0 - 2026-05-12
 
 - Rewrited every code, and now it fixed most of the problem. Now it more stable and undetected.

@@ -39,7 +39,14 @@ normal Chrome user agent before the first request. This applies to
 `PATCHRIGHT_DIFZ_HEADLESS_USER_AGENT=0` to keep Patchright's default headless
 user agent, or set it to a full user-agent string to override the default.
 
-Pages created through this wrapper also get a built-in human-style cursor:
+## Human-style cursor
+
+Pages created through this wrapper get a built-in cursor that mimics real mouse
+behaviour. Movement follows a cubic Bézier arc with Gaussian hand-tremor noise,
+lateral wind drift that self-corrects near the target, micro-corrective
+sub-movements on arrival, and directional overshoot on long moves. Click timing
+uses natural press-hold durations and, for double-clicks, realistic inter-click
+intervals with a small position drift between the two events.
 
 ```ts
 await page.realClick?.("#submit");
@@ -49,7 +56,7 @@ await page.realCursor?.moveTo({ x: 300, y: 240 });
 The Turnstile helper uses this cursor for mouse movement and click timing while
 keeping the existing Turnstile click-point calculation.
 
-You can also configure it:
+### Configuration
 
 ```ts
 const context = await chromium.launchPersistentContext(userDataDir, {
@@ -68,7 +75,105 @@ const context = await chromium.launchPersistentContext(userDataDir, {
 });
 ```
 
-Manual usage:
+### Cursor API
+
+All methods accept a `CursorTarget`, which can be a CSS selector string, a
+`{ x, y }` point, a bounding box object, an `ElementHandle`, or a `Locator`.
+
+```ts
+const cursor = page.realCursor!;
+
+await cursor.click("#submit");
+await cursor.click({ x: 640, y: 360 });
+await cursor.click(page.locator("button"), { hesitate: 120 });
+
+await cursor.doubleClick(".item");
+
+await cursor.move("#menu");
+await cursor.moveTo({ x: 100, y: 200 });
+await cursor.moveBy({ x: 50, y: -20 });
+
+await cursor.scroll("#feed", { deltaY: 600, steps: 8 });
+await cursor.scroll("#feed", { deltaY: -300, easing: "ease-out" });
+
+await cursor.drag("#handle", "#dropzone");
+
+await cursor.hover("#tooltip-trigger", { duration: 800 });
+
+const { x, y } = cursor.getLocation();
+
+await cursor.mouseDown();
+await cursor.mouseUp();
+```
+
+#### `CursorMoveOptions`
+
+| Option | Default | Description |
+|---|---|---|
+| `moveSpeed` | `1.0` | Speed multiplier. `2.0` = 2× faster, `0.5` = 2× slower. |
+| `jitter` | `1.5` | Hand-tremor amplitude in px. `0` = perfectly smooth. |
+| `windStrength` | `0.25` | Lateral drift [0–1] that self-corrects near the target. |
+| `microCorrections` | `true` | Sub-pixel corrective nudges on arrival. |
+| `overshootThreshold` | `500` | Distance in px above which overshoot is applied. |
+| `paddingPercentage` | `20` | Padding from element edges when picking a click point. |
+| `moveDelay` | `0` | Extra pause after move completes (ms). |
+| `randomizeMoveDelay` | `true` | Randomise the post-move delay. |
+| `destination` | — | Override click point within the element's bounding box. |
+| `waitForSelector` | — | Timeout for selector resolution (ms). |
+
+#### `CursorClickOptions` (extends `CursorMoveOptions`)
+
+| Option | Default | Description |
+|---|---|---|
+| `button` | `"left"` | `"left"`, `"right"`, or `"middle"`. |
+| `clickCount` | `1` | Number of clicks in the sequence. |
+| `hesitate` | `0` | Pre-click idle pause with hand-tremor (ms). |
+| `delay` / `waitForClick` | random 60–120 ms | Hold duration between mousedown and mouseup. |
+
+#### `CursorScrollOptions`
+
+| Option | Default | Description |
+|---|---|---|
+| `deltaY` | `300` | Vertical scroll distance in CSS pixels (positive = down). |
+| `deltaX` | `0` | Horizontal scroll distance (positive = right). |
+| `steps` | `6` | Number of individual wheel events. |
+| `stepDelay` | `60` | Base delay between steps (ms). |
+| `stepJitter` | `8` | ±variance added to each step size. |
+| `easing` | `"ease-in-out"` | `"linear"`, `"ease-in"`, `"ease-out"`, or `"ease-in-out"`. |
+
+#### `CursorDragOptions` (extends `CursorMoveOptions`)
+
+| Option | Default | Description |
+|---|---|---|
+| `dragDelay` | random 80–160 ms | Pause after mousedown before the drag starts. |
+| `releaseDelay` | random 40–110 ms | Pause before releasing at the destination. |
+
+#### `HoverOptions` (extends `CursorMoveOptions`)
+
+| Option | Default | Description |
+|---|---|---|
+| `duration` | `500` | How long to idle on the element with hand-tremor (ms). |
+
+### Manual cursor creation
+
+```ts
+import { createCursor, installMouseHelper } from "patchright-difz";
+
+const cursor = createCursor(page, { x: 0, y: 0 });
+
+await cursor.click("#submit", { moveSpeed: 1.5, hesitate: 80 });
+await cursor.scroll("main", { deltaY: 900, steps: 10 });
+await cursor.drag(".card", ".trash", { dragDelay: 100 });
+await cursor.hover("nav a", { duration: 600 });
+
+await installMouseHelper(page);
+```
+
+`installMouseHelper` injects a small dot overlay that tracks the CDP-controlled
+cursor position during development. The dot turns blue on left click, red on
+right click, and square on middle click.
+
+## Manual usage
 
 ```ts
 import { chromium, checkTurnstile } from "patchright-difz";
@@ -83,7 +188,6 @@ const page = await context.newPage();
 await page.goto("https://example.com");
 const stopWatching = checkTurnstile({ page });
 
-// Later, when you no longer want the page watcher:
 stopWatching();
 ```
 
@@ -94,7 +198,7 @@ After a click, the watcher waits before trying again and increases the retry
 cooldown while the same page keeps presenting candidates. Hidden response fields
 are treated as token/data evidence only, not as clickable targets.
 
-Turnstile and Cloudflare data helpers:
+## Turnstile and Cloudflare data helpers
 
 ```ts
 import {
@@ -193,14 +297,3 @@ install it as an npm alias in your app:
 ```bash
 npm install patchright@npm:patchright-difz
 ```
-
-For library publishing, prefer documenting `import { chromium } from "patchright-difz"` because it is clearer and avoids dependency confusion.
-
-## Publish
-
-```bash
-npm run publish
-```
-
-The command builds, creates a `v<version>` git tag, pushes to GitHub, and lets
-the GitHub Actions workflow publish to npm through Trusted Publishing.

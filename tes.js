@@ -9,4 +9,4 @@ const context = await chromium.launch({
 
 const page = await context.newPage();
 
-await page.goto("https://turnstile.zeroclover.io/");
+await page.goto("https://work.ink/1VN5/antirewrite");
