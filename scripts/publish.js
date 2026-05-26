@@ -96,7 +96,7 @@ run("npm", ["pack", "--dry-run", "--ignore-scripts"]);
 
 if (dryRun) {
   console.log(`[dry-run] would commit, tag ${tag}, and push to GitHub.`);
-  console.log("[dry-run] GitHub Actions would publish the package to npm.");
+  console.log(`[dry-run] would publish the package directly to npm as fallback.`);
   process.exit(0);
 }
 
@@ -110,4 +110,7 @@ ensureTag();
 run("git", ["push", "origin", "HEAD"]);
 run("git", ["push", "origin", tag]);
 
-console.log(`${tag} pushed. GitHub Actions will publish to npm.`);
+console.log(`${tag} pushed to GitHub.`);
+console.log(`Publishing directly to npm as fallback...`);
+run("npm", ["publish", "--access", "public"]);
+console.log(`Successfully published to npm.`);

@@ -22,6 +22,8 @@ export type TurnstileAutoOptions = {
   clickCooldownMs?: number;
   maxClickCooldownMs?: number;
   logger?: (message: string) => void;
+  /** When false (default), token values and clearance cookies are excluded from getCloudflareData responses */
+  collectSensitiveData?: boolean;
 };
 
 export type CheckTurnstileOptions = {
@@ -61,6 +63,8 @@ export type CloudflareDataOptions = {
   urls?: string | string[];
   minTokenLength?: number;
   timeoutMs?: number;
+  /** When false (default), token values and clearance cookies are excluded from responses */
+  collectSensitiveData?: boolean;
 };
 
 type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
@@ -105,7 +109,6 @@ export type CloudflareData = {
   cookies: CloudflareCookie[];
   cloudflareCookies: CloudflareCookie[];
   clearanceCookie: string;
-  cfClearance: string;
   turnstile: {
     present: boolean;
     solved: boolean;
@@ -215,6 +218,7 @@ function normalizeOptions(
       options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
     clickCooldownMs: options.clickCooldownMs ?? 5000,
     maxClickCooldownMs: options.maxClickCooldownMs ?? 45000,
+    collectSensitiveData: options.collectSensitiveData ?? false,
     logger: options.logger,
   };
 }
@@ -643,7 +647,7 @@ async function getCloudflarePageData(
 ): Promise<
   Omit<
     CloudflareData,
-    "cookies" | "cloudflareCookies" | "clearanceCookie" | "cfClearance"
+    "cookies" | "cloudflareCookies" | "clearanceCookie"
   >
 > {
   return page.evaluate(
@@ -995,7 +999,6 @@ export async function _getCloudflareDataRaw({
     cookies: rawCookies.map(toCookieData),
     cloudflareCookies: cloudflareCookieValues.map(toCookieData),
     clearanceCookie: clearanceCookie?.value || "",
-    cfClearance: clearanceCookie?.value || "",
     turnstile: {
       ...pageData.turnstile,
       solved: pageData.turnstile.solved,
@@ -1048,7 +1051,21 @@ export async function getCloudflareData(
   }
 
   // Take a single snapshot of all data at the end
-  return await _getCloudflareDataRaw(options);
+  const data = await _getCloudflareDataRaw(options);
+
+  // Strip sensitive data unless explicitly requested
+  if (!options.collectSensitiveData) {
+    data.turnstile.responses = [];
+    data.turnstile.tokens = [];
+    data.clearanceCookie = "";
+    data.cloudflareCookies = data.cloudflareCookies.filter(
+      (c) => c.name !== "cf_clearance",
+    );
+    data.cookies = data.cookies.filter((c) => c.name !== "cf_clearance");
+    data.challenge.cleared = false;
+  }
+
+  return data;
 }
 
 export async function isCloudflareManagedChallenge({
@@ -1345,6 +1362,16 @@ export function installTurnstileAutoSolver(
 ): () => void {
   const options = normalizeOptions(option);
   const pageCleanups = new Set<() => void>();
+
+  // Warn about authorized use when auto-solver activates
+  const startupMsg =
+    "[patchright-difz] Turnstile auto-solver activated. " +
+    "Authorized use only — you must have permission to test the target.";
+  if (options.logger) {
+    options.logger(startupMsg);
+  } else if (typeof console !== "undefined") {
+    (console.error ?? console.warn)(startupMsg);
+  }
 
   const attachPage = (page: Page): void => {
     const stopWatching = watchTurnstilePage(page, options);

@@ -2,6 +2,9 @@
 
 Drop-in Patchright wrapper. Handles Cloudflare Turnstile automatically and moves the mouse like a real person.
 
+> **⚠️ Authorized Use Only**
+> This package is designed for **legitimate automated testing, security research, and authorized penetration testing** of systems you own or have explicit permission to test. Bypassing Cloudflare Turnstile without authorization may violate the [Computer Fraud and Abuse Act](https://en.wikipedia.org/wiki/Computer_Fraud_and_Abuse_Act) and Cloudflare's Terms of Service. You are solely responsible for complying with all applicable laws and obtaining proper authorization before use.
+
 ## Install
 
 ```bash
@@ -122,7 +125,16 @@ await isTurnstileSolved({ page });
 await isCloudflareManagedChallenge({ page });
 
 const data = await getCloudflareData({ page });
-// data.cfClearance, data.turnstile.tokens, data.cloudflareCookies, etc.
+// data.turnstile.tokens, data.cloudflareCookies, etc.
+```
+
+Token values and clearance cookies are excluded by default. Pass `collectSensitiveData: true` to include them:
+
+```ts
+const data = await getCloudflareData({
+  page,
+  collectSensitiveData: true,
+});
 ```
 
 ## Cleanup
