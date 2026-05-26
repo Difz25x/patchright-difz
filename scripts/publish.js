@@ -91,7 +91,6 @@ function ensureTag() {
   }
 }
 
-run("npm", ["run", "build"]);
 run("npm", ["pack", "--dry-run", "--ignore-scripts"]);
 
 if (dryRun) {
