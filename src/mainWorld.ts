@@ -125,71 +125,36 @@ function requirePatchrightCoreModule<T extends object>(
 }
 
 export function installMainWorldEvaluateDefaults(): boolean {
-  const pageModule = requirePatchrightCoreModule<{
-    Page?: { prototype: Prototype };
-  }>("lib/client/page.js");
-  const frameModule = requirePatchrightCoreModule<{
-    Frame?: { prototype: Prototype };
-  }>("lib/client/frame.js");
-  const locatorModule = requirePatchrightCoreModule<{
-    Locator?: { prototype: Prototype };
-  }>("lib/client/locator.js");
-  const jsHandleModule = requirePatchrightCoreModule<{
-    JSHandle?: { prototype: Prototype };
-  }>("lib/client/jsHandle.js");
-  const workerModule = requirePatchrightCoreModule<{
-    Worker?: { prototype: Prototype };
-  }>("lib/client/worker.js");
+  const modules = {
+    page: requirePatchrightCoreModule<{ Page?: { prototype: Prototype } }>("lib/client/page.js"),
+    frame: requirePatchrightCoreModule<{ Frame?: { prototype: Prototype } }>("lib/client/frame.js"),
+    locator: requirePatchrightCoreModule<{ Locator?: { prototype: Prototype } }>("lib/client/locator.js"),
+    jsHandle: requirePatchrightCoreModule<{ JSHandle?: { prototype: Prototype } }>("lib/client/jsHandle.js"),
+    worker: requirePatchrightCoreModule<{ Worker?: { prototype: Prototype } }>("lib/client/worker.js"),
+  };
 
-  const modules = [
-    pageModule,
-    frameModule,
-    locatorModule,
-    jsHandleModule,
-    workerModule,
+  if (Object.values(modules).some((m) => !m)) return false;
+
+  const patches: [Prototype | undefined, string, number][] = [
+    [modules.page?.Page?.prototype, "evaluate", 2],
+    [modules.page?.Page?.prototype, "evaluateHandle", 2],
+    [modules.frame?.Frame?.prototype, "evaluate", 2],
+    [modules.frame?.Frame?.prototype, "evaluateHandle", 2],
+    [modules.frame?.Frame?.prototype, "$$eval", 3],
+    [modules.locator?.Locator?.prototype, "evaluate", 3],
+    [modules.locator?.Locator?.prototype, "evaluateHandle", 3],
+    [modules.locator?.Locator?.prototype, "evaluateAll", 2],
+    [modules.jsHandle?.JSHandle?.prototype, "evaluate", 2],
+    [modules.jsHandle?.JSHandle?.prototype, "evaluateHandle", 2],
+    [modules.worker?.Worker?.prototype, "evaluate", 2],
+    [modules.worker?.Worker?.prototype, "evaluateHandle", 2],
   ];
 
-  if (modules.some((module) => !module)) {
-    return false;
+  for (const [proto, method, idx] of patches) {
+    patchIsolatedContextDefault(proto, method, idx);
   }
 
-  patchIsolatedContextDefault(pageModule?.Page?.prototype, "evaluate", 2);
-  patchIsolatedContextDefault(pageModule?.Page?.prototype, "evaluateHandle", 2);
-
-  patchIsolatedContextDefault(frameModule?.Frame?.prototype, "evaluate", 2);
-  patchIsolatedContextDefault(
-    frameModule?.Frame?.prototype,
-    "evaluateHandle",
-    2,
-  );
-  patchIsolatedContextDefault(frameModule?.Frame?.prototype, "$$eval", 3);
-  patchFrameDollarEval(frameModule?.Frame?.prototype);
-
-  patchIsolatedContextDefault(locatorModule?.Locator?.prototype, "evaluate", 3);
-  patchIsolatedContextDefault(
-    locatorModule?.Locator?.prototype,
-    "evaluateHandle",
-    3,
-  );
-  patchIsolatedContextDefault(
-    locatorModule?.Locator?.prototype,
-    "evaluateAll",
-    2,
-  );
-
-  patchIsolatedContextDefault(jsHandleModule?.JSHandle?.prototype, "evaluate", 2);
-  patchIsolatedContextDefault(
-    jsHandleModule?.JSHandle?.prototype,
-    "evaluateHandle",
-    2,
-  );
-
-  patchIsolatedContextDefault(workerModule?.Worker?.prototype, "evaluate", 2);
-  patchIsolatedContextDefault(
-    workerModule?.Worker?.prototype,
-    "evaluateHandle",
-    2,
-  );
+  patchFrameDollarEval(modules.frame?.Frame?.prototype);
 
   return true;
 }

@@ -69,22 +69,15 @@ export function withDefaultUserAgent<T extends object | undefined>(
 }
 
 function readChromeVersion(options?: HeadlessSource): string | undefined {
-  const explicitPath =
-    typeof options?.executablePath === "string" ? options.executablePath : null;
-
-  if (explicitPath) {
-    return readExecutableVersion(explicitPath);
+  if (typeof options?.executablePath === "string") {
+    return readExecutableVersion(options.executablePath);
   }
 
   const channel = typeof options?.channel === "string" ? options.channel : "";
-
   for (const path of chromePaths(channel)) {
-    if (existsSync(path)) {
-      const version = readExecutableVersion(path);
-      if (version) return version;
-    }
+    const version = existsSync(path) ? readExecutableVersion(path) : undefined;
+    if (version) return version;
   }
-
   return undefined;
 }
 
@@ -116,45 +109,27 @@ function readWindowsFileVersion(path: string): string | undefined {
 
 function chromePaths(channel: string): string[] {
   if (process.platform !== "win32") {
-    const names =
-      channel.includes("edge")
-        ? ["microsoft-edge", "microsoft-edge-stable"]
-        : ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
-
-    return names;
+    if (channel.includes("edge")) return ["microsoft-edge", "microsoft-edge-stable"];
+    return ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"];
   }
 
-  const programFiles = [
-    process.env.ProgramFiles,
-    process.env["ProgramFiles(x86)"],
-    process.env.LocalAppData,
-  ].filter(Boolean) as string[];
+  const dirs = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LocalAppData]
+    .filter(Boolean) as string[];
 
-  if (channel.includes("edge")) {
-    return programFiles.map((base) =>
-      join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
-    );
+  const subPaths: Record<string, string> = {
+    edge: join("Microsoft", "Edge", "Application", "msedge.exe"),
+    canary: join("Google", "Chrome SxS", "Application", "chrome.exe"),
+    beta: join("Google", "Chrome Beta", "Application", "chrome.exe"),
+    dev: join("Google", "Chrome Dev", "Application", "chrome.exe"),
+  };
+
+  const variant = Object.keys(subPaths).find((k) => channel.includes(k));
+  const sub = variant ? subPaths[variant] : join("Google", "Chrome", "Application", "chrome.exe");
+
+  if (variant === "canary") {
+    return [join(process.env.LocalAppData ?? "", sub)];
   }
-
-  if (channel.includes("canary")) {
-    return [join(process.env.LocalAppData ?? "", "Google", "Chrome SxS", "Application", "chrome.exe")];
-  }
-
-  if (channel.includes("beta")) {
-    return programFiles.map((base) =>
-      join(base, "Google", "Chrome Beta", "Application", "chrome.exe"),
-    );
-  }
-
-  if (channel.includes("dev")) {
-    return programFiles.map((base) =>
-      join(base, "Google", "Chrome Dev", "Application", "chrome.exe"),
-    );
-  }
-
-  return programFiles.map((base) =>
-    join(base, "Google", "Chrome", "Application", "chrome.exe"),
-  );
+  return dirs.map((base) => join(base, sub));
 }
 
 function readBundledChromiumVersion(): string | undefined {

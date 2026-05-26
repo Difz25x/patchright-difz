@@ -173,7 +173,7 @@ const DEFAULT_CLICK_BEHAVIOR: ClickBehaviorOptions = {
   foreground: true,
   clickDelayMs: 35,
   mouseMoveSteps: 8,
-  waitAfterClickMs: 150,
+  waitAfterClickMs: 100,
 };
 
 type NormalizedTurnstileOptions = Required<
@@ -204,7 +204,7 @@ function normalizeOptions(
 
   return {
     timeoutMs: options.timeoutMs ?? 3000,
-    intervalMs: options.intervalMs ?? 750,
+    intervalMs: options.intervalMs ?? 500,
     selectors: options.selectors ?? DEFAULT_TURNSTILE_SELECTORS,
     maxCandidatesPerSelector: options.maxCandidatesPerSelector ?? 5,
     foreground: options.foreground ?? DEFAULT_CLICK_BEHAVIOR.foreground,
@@ -213,8 +213,8 @@ function normalizeOptions(
       options.mouseMoveSteps ?? DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
     waitAfterClickMs:
       options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
-    clickCooldownMs: options.clickCooldownMs ?? 8000,
-    maxClickCooldownMs: options.maxClickCooldownMs ?? 60000,
+    clickCooldownMs: options.clickCooldownMs ?? 5000,
+    maxClickCooldownMs: options.maxClickCooldownMs ?? 45000,
     logger: options.logger,
   };
 }
@@ -230,11 +230,13 @@ function toCookieData(cookie: BrowserCookie): CloudflareCookie {
 }
 
 function getClickPoint(box: BoundingBox): { x: number; y: number } {
-  const xOffset = box.width > 80 ? 30 : box.width / 2;
+  const xBase = box.width > 80 ? 30 : box.width / 2;
+  const xNoise = (Math.random() - 0.5) * Math.min(8, box.width * 0.06);
+  const yNoise = (Math.random() - 0.5) * Math.min(6, box.height * 0.08);
 
   return {
-    x: box.x + xOffset,
-    y: box.y + box.height / 2,
+    x: box.x + xBase + xNoise,
+    y: box.y + box.height / 2 + yNoise,
   };
 }
 
@@ -258,6 +260,8 @@ async function preparePageForClick(
 ): Promise<void> {
   if (!options.foreground) return;
 
+  const preDelay = Math.round(20 + Math.random() * 40);
+  await page.waitForTimeout(preDelay).catch(() => undefined);
   await page.bringToFront().catch(() => undefined);
   await page
     .evaluate(() => {
@@ -277,15 +281,30 @@ async function clickBox(
   const point = getClickPoint(box);
   await preparePageForClick(page, options);
   const cursor = installRealCursor(page);
+  const steps = Math.max(1, options.mouseMoveSteps + Math.round((Math.random() - 0.5) * 4));
+
+  // wander nearby before clicking — looks like a human scanning the page
+  if (Math.random() < 0.6) {
+    const wanderX = point.x + (Math.random() - 0.5) * 120;
+    const wanderY = point.y + (Math.random() - 0.5) * 80;
+    await cursor.move({ x: wanderX, y: wanderY }, { moveSpeed: 0.7 + Math.random() * 0.6 }).catch(() => undefined);
+    await page.waitForTimeout(Math.round(80 + Math.random() * 200)).catch(() => undefined);
+  }
+
+  // thinking delay — short pause like a human recognizing the checkbox
+  const thinkMs = Math.round(30 + Math.random() * 120);
+  await page.waitForTimeout(thinkMs).catch(() => undefined);
 
   await cursor.click(point, {
-    moveSpeed: Math.max(1, options.mouseMoveSteps),
+    moveSpeed: Math.max(1, steps),
     overshootThreshold: 420,
-    waitForClick: options.clickDelayMs,
+    hesitate: Math.round(20 + Math.random() * 60),
+    waitForClick: options.clickDelayMs + Math.round((Math.random() - 0.5) * 16),
   });
 
   if (options.waitAfterClickMs > 0) {
-    await page.waitForTimeout(options.waitAfterClickMs).catch(() => undefined);
+    const jitteredWait = Math.round(options.waitAfterClickMs * (0.7 + Math.random() * 0.6));
+    await page.waitForTimeout(jitteredWait).catch(() => undefined);
   }
 
   return true;
@@ -344,7 +363,7 @@ async function isTurnstileFrameReady(
       ready = await frame
         .waitForSelector('input[type="checkbox"]', {
           state: "visible",
-          timeout: 15000,
+          timeout: 8000,
         })
         .then(() => true)
         .catch(() => false);
@@ -373,20 +392,36 @@ async function clickLocatorBox(
 
   const point = getClickPoint(box);
   await preparePageForClick(page, options);
+  const steps = Math.max(1, options.mouseMoveSteps + Math.round((Math.random() - 0.5) * 4));
+  const cursor = installRealCursor(page);
 
-  const clickedByCursor = await installRealCursor(page)
+  // wander nearby before clicking
+  if (Math.random() < 0.6) {
+    const wanderX = point.x + (Math.random() - 0.5) * 120;
+    const wanderY = point.y + (Math.random() - 0.5) * 80;
+    await cursor.move({ x: wanderX, y: wanderY }, { moveSpeed: 0.7 + Math.random() * 0.6 }).catch(() => undefined);
+    await page.waitForTimeout(Math.round(80 + Math.random() * 200)).catch(() => undefined);
+  }
+
+  // thinking delay
+  const thinkMs = Math.round(30 + Math.random() * 120);
+  await page.waitForTimeout(thinkMs).catch(() => undefined);
+
+  const clickedByCursor = await cursor
     .click(point, {
-      moveSpeed: Math.max(1, options.mouseMoveSteps),
+      moveSpeed: Math.max(1, steps),
       overshootThreshold: 420,
-      waitForClick: options.clickDelayMs,
+      hesitate: Math.round(20 + Math.random() * 60),
+      waitForClick: options.clickDelayMs + Math.round((Math.random() - 0.5) * 16),
     })
     .then(() => true)
     .catch(() => false);
 
   if (clickedByCursor) {
     if (options.waitAfterClickMs > 0) {
+      const jitteredWait = Math.round(options.waitAfterClickMs * (0.7 + Math.random() * 0.6));
       await page
-        .waitForTimeout(options.waitAfterClickMs)
+        .waitForTimeout(jitteredWait)
         .catch(() => undefined);
     }
 
@@ -451,7 +486,10 @@ async function clickTurnstileLocators(
   maxCandidatesPerSelector: number,
   options: ClickBehaviorOptions,
 ): Promise<boolean> {
-  for (const selector of selectors) {
+  // shuffle selector order so scan pattern isn't deterministic
+  const shuffled = [...selectors].sort(() => Math.random() - 0.5);
+
+  for (const selector of shuffled) {
     if (isOptionalResponseSelector(selector)) continue;
 
     const locator = page.locator(selector);
@@ -501,19 +539,16 @@ async function hasTurnstileLocators(
   for (const selector of selectors) {
     const locator = page.locator(selector);
     const count = await locator.count().catch(() => 0);
+    if (count === 0) continue;
 
-    for (
-      let index = 0;
-      index < Math.min(count, maxCandidatesPerSelector);
-      index++
-    ) {
-      const target = locator.nth(index);
-      const box = await target.boundingBox({ timeout: 250 }).catch(() => null);
+    if (!isOptionalResponseSelector(selector)) return true;
 
-      if (box && looksLikeTurnstileBox(box)) return true;
-    }
-
-    if (count > 0 && !isOptionalResponseSelector(selector)) return true;
+    const checks = Array.from(
+      { length: Math.min(count, maxCandidatesPerSelector) },
+      (_, i) => locator.nth(i).boundingBox({ timeout: 250 }).catch(() => null),
+    );
+    const boxes = await Promise.all(checks);
+    if (boxes.some((box) => box && looksLikeTurnstileBox(box))) return true;
   }
 
   return false;

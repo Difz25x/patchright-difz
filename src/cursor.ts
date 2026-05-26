@@ -88,6 +88,10 @@ const DEFAULT_OVERSHOOT_THRESHOLD = 500;
 const DEFAULT_JITTER = 1.5;
 const DEFAULT_WIND_STRENGTH = 0.25;
 
+function gaussianClamp(mean: number, std: number, min: number, max: number): number {
+  return clamp(gaussianRandom(mean, std), min, max);
+}
+
 const cursorContexts = new WeakSet<BrowserContext>();
 
 function wait(page: Page, ms: number | undefined): Promise<void> {
@@ -200,15 +204,16 @@ function generateControlPoints(
   const len = dist(start, end);
   const dir = sub(end, start);
   const spread = clamp(len * 0.35, 5, 220);
-  const side = Math.random() < 0.5 ? 1 : -1;
   const perpDir = perp(unit(dir));
 
+  // asymmetric — each control point picks its own side independently
+  const side1 = Math.random() < 0.5 ? 1 : -1;
+  const side2 = Math.random() < 0.35 ? -side1 : side1;
 
-
-  const t1 = randBetween(0.2, 0.45);
-  const t2 = randBetween(0.55, 0.8);
-  const o1 = spread * randBetween(0.3, 1.0) * side;
-  const o2 = spread * randBetween(0.3, 1.0) * side;
+  const t1 = randBetween(0.15, 0.45);
+  const t2 = randBetween(0.55, 0.85);
+  const o1 = spread * randBetween(0.2, 1.0) * side1;
+  const o2 = spread * randBetween(0.2, 0.9) * side2;
 
   return [
     add(add(start, mult(dir, t1)), mult(perpDir, o1)),
@@ -286,7 +291,9 @@ function generateSpatialPath(
 
 
   const totalMs = fittsTime(len, 80, speed);
-  const steps = clamp(Math.ceil(totalMs / 8), 12, 250);
+  // variable velocity — multiply speed slightly along the path
+  const speedVariation = 1 + gaussianRandom(0, 0.08);
+  const steps = clamp(Math.ceil((totalMs * speedVariation) / 8), 8, 250);
 
   const [ctrl1, ctrl2] = generateControlPoints(start, end);
 
@@ -319,10 +326,25 @@ function stampPath(
   const now = Date.now();
   if (n === 1) return [{ ...points[0], timestamp: now }];
 
-  return points.map((p, i) => {
+  // inject 0-2 micro-pauses at random positions to simulate human hesitation
+  const pauseCount = Math.random() < 0.4 ? 0 : Math.random() < 0.7 ? 1 : 2;
+  const pauseIndices = new Set<number>();
+  for (let p = 0; p < pauseCount; p++) {
+    pauseIndices.add(Math.floor(randBetween(n * 0.2, n * 0.8)));
+  }
+
+  let accumulated = 0;
+  return points.map((pt, i) => {
     const spatialFraction = i / (n - 1);
     const timeFraction = inverseEaseInOut(spatialFraction);
-    return { ...p, timestamp: now + Math.round(timeFraction * totalMs) };
+    let ts = now + Math.round(timeFraction * totalMs);
+
+    if (pauseIndices.has(i)) {
+      accumulated += Math.round(randBetween(8, 35));
+    }
+    ts += accumulated;
+
+    return { ...pt, timestamp: ts };
   });
 }
 
@@ -331,7 +353,7 @@ function microCorrectionPath(
   target: CursorPoint,
 ): { points: CursorPoint[]; durationMs: number } {
   const d = dist(current, target);
-  if (d < 0.5) return { points: [{ ...target }], durationMs: 20 };
+  if (d < 0.5) return { points: [{ ...target }], durationMs: 15 };
 
   const overshootFactor = randBetween(0.06, 0.22);
   const overshootPt = add(target, mult(sub(target, current), overshootFactor));
@@ -351,7 +373,7 @@ function microCorrectionPath(
 
       { ...target },
     ],
-    durationMs: clamp(d * 2, 25, 120),
+    durationMs: clamp(d * 2, 20, 80),
   };
 }
 
@@ -381,7 +403,7 @@ function idleJitterPath(
 ): TimedVector[] {
   if (durationMs <= 0) return [];
 
-  const hz = 10;
+  const hz = 15;
   const count = Math.max(2, Math.floor((durationMs / 1000) * hz));
   const interval = durationMs / count;
   const now = Date.now();
@@ -553,7 +575,10 @@ async function resolveTargetPoint(
 
 export function createCursor(
   page: Page,
-  start: CursorPoint = { x: 0, y: 0 },
+  start: CursorPoint = {
+    x: Math.round(100 + Math.random() * 400),
+    y: Math.round(80 + Math.random() * 300),
+  },
 ): RealCursor {
   let location = { ...start };
   let cdpSessionPromise: Promise<CDPSession> | null = null;
@@ -582,12 +607,13 @@ export function createCursor(
       if (delay > 0) await wait(page, delay);
 
       try {
+        const tsJitter = gaussianRandom(0, 0.002);
         await cdp.send("Input.dispatchMouseEvent", {
           type: "mouseMoved",
           x: point.x,
           y: point.y,
 
-          timestamp: point.timestamp / 1000,
+          timestamp: point.timestamp / 1000 + tsJitter,
         });
       } catch (err) {
         if (!page.isClosed()) throw err;
@@ -650,7 +676,7 @@ export function createCursor(
         ...options,
         microCorrections: false,
 
-        moveSpeed: (options?.moveSpeed ?? 1) * 1.1,
+        moveSpeed: (options?.moveSpeed ?? 1) * 1.3,
       });
     }
 
@@ -680,14 +706,18 @@ export function createCursor(
     options?: Pick<CursorClickOptions, "button" | "clickCount">,
   ): Promise<void> => {
     const cdp = await getCdp();
+    // sub-pixel offset so click coords aren't snapped to integer grid
+    const subX = location.x + gaussianRandom(0, 0.3);
+    const subY = location.y + gaussianRandom(0, 0.3);
     try {
+      const tsJitter = gaussianRandom(0, 0.0015);
       await cdp.send("Input.dispatchMouseEvent", {
         type: action,
-        x: location.x,
-        y: location.y,
+        x: subX,
+        y: subY,
         button: options?.button ?? "left",
         clickCount: options?.clickCount ?? 1,
-        timestamp: Date.now() / 1000,
+        timestamp: Date.now() / 1000 + tsJitter,
       });
     } catch (err) {
       if (!page.isClosed()) throw err;
@@ -730,7 +760,7 @@ export function createCursor(
         const holdMs =
           options?.waitForClick ??
           options?.delay ??
-          Math.round(randBetween(60, 120));
+          Math.round(gaussianClamp(85, 20, 45, 140));
         await wait(page, holdMs);
 
         await cursor.mouseUp({ button: options?.button, clickCount: index });
@@ -740,7 +770,7 @@ export function createCursor(
           const interMs =
             options?.waitForClick ??
             options?.delay ??
-            Math.round(randBetween(50, 100));
+            Math.round(gaussianClamp(70, 15, 35, 110));
           await wait(page, interMs);
         }
       }

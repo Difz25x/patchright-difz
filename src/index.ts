@@ -103,22 +103,17 @@ type ChromiumWithTurnstile = Omit<
 function splitTurnstileOption<T extends object | undefined>(
   options: WithTurnstile<T> | undefined,
 ): { patchrightOptions: T | undefined; turnstile: TurnstileOption | undefined } {
-  if (!options) {
-    return {
-      patchrightOptions: undefined,
-      turnstile: undefined,
-    };
-  }
+  if (!options) return { patchrightOptions: undefined, turnstile: undefined };
+  const { turnstile, ...rest } = options as Record<string, unknown>;
+  return { patchrightOptions: rest as T, turnstile: turnstile as TurnstileOption | undefined };
+}
 
-  const { turnstile, ...patchrightOptions } = options as Record<
-    string,
-    unknown
-  >;
-
-  return {
-    patchrightOptions: patchrightOptions as T,
-    turnstile: turnstile as TurnstileOption | undefined,
-  };
+function setupContext(
+  context: BrowserContext,
+  turnstile?: TurnstileOption,
+): void {
+  installRealCursorContext(context);
+  if (turnstile) installTurnstileAutoSolver(context, turnstile);
 }
 
 function wrapBrowser(
@@ -130,43 +125,19 @@ function wrapBrowser(
     get(target, property, receiver) {
       if (property === "newContext") {
         return async (options?: WithTurnstile<BrowserNewContextOptions>) => {
-          const { patchrightOptions, turnstile } =
-            splitTurnstileOption(options);
-          const contextOptions = withDefaultUserAgent(
-            patchrightOptions,
-            defaultUserAgent,
-          );
-          const context = await target.newContext(contextOptions);
-          installRealCursorContext(context);
-
-          const turnstileOption = turnstile ?? defaultTurnstile;
-
-          if (turnstileOption) {
-            installTurnstileAutoSolver(context, turnstileOption);
-          }
-
+          const { patchrightOptions, turnstile } = splitTurnstileOption(options);
+          const context = await target.newContext(withDefaultUserAgent(patchrightOptions, defaultUserAgent));
+          setupContext(context, turnstile ?? defaultTurnstile);
           return context;
         };
       }
 
       if (property === "newPage") {
         return async (options?: WithTurnstile<BrowserNewPageOptions>) => {
-          const { patchrightOptions, turnstile } =
-            splitTurnstileOption(options);
-          const pageOptions = withDefaultUserAgent(
-            patchrightOptions,
-            defaultUserAgent,
-          );
-          const page = await target.newPage(pageOptions);
-          installRealCursorContext(page.context());
+          const { patchrightOptions, turnstile } = splitTurnstileOption(options);
+          const page = await target.newPage(withDefaultUserAgent(patchrightOptions, defaultUserAgent));
           installRealCursor(page);
-
-          const turnstileOption = turnstile ?? defaultTurnstile;
-
-          if (turnstileOption) {
-            installTurnstileAutoSolver(page.context(), turnstileOption);
-          }
-
+          setupContext(page.context(), turnstile ?? defaultTurnstile);
           return page;
         };
       }
@@ -177,9 +148,7 @@ function wrapBrowser(
   }) as BrowserWithTurnstile;
 }
 
-function wrapChromium(
-  browserType: BrowserType,
-): ChromiumWithTurnstile {
+function wrapChromium(browserType: BrowserType): ChromiumWithTurnstile {
   return new Proxy(browserType, {
     get(target, property, receiver) {
       if (property === "launchPersistentContext") {
@@ -187,34 +156,18 @@ function wrapChromium(
           userDataDir: string,
           options?: WithTurnstile<LaunchPersistentContextOptions>,
         ) => {
-          const { patchrightOptions, turnstile } =
-            splitTurnstileOption(options);
-          const contextOptions = withHeadlessUserAgent(patchrightOptions);
-          const context = await target.launchPersistentContext(
-            userDataDir,
-            contextOptions,
-          );
-          installRealCursorContext(context);
-
-          if (turnstile) {
-            installTurnstileAutoSolver(context, turnstile);
-          }
-
+          const { patchrightOptions, turnstile } = splitTurnstileOption(options);
+          const context = await target.launchPersistentContext(userDataDir, withHeadlessUserAgent(patchrightOptions));
+          setupContext(context, turnstile);
           return context;
         };
       }
 
       if (property === "launch") {
         return async (options?: WithTurnstile<LaunchOptions>) => {
-          const { patchrightOptions, turnstile } =
-            splitTurnstileOption(options);
-          const defaultUserAgent =
-            patchrightOptions?.headless === false
-              ? undefined
-              : getHeadlessUserAgent(patchrightOptions);
-          const browser = await target.launch(patchrightOptions);
-
-          return wrapBrowser(browser, turnstile, defaultUserAgent);
+          const { patchrightOptions, turnstile } = splitTurnstileOption(options);
+          const ua = patchrightOptions?.headless === false ? undefined : getHeadlessUserAgent(patchrightOptions);
+          return wrapBrowser(await target.launch(patchrightOptions), turnstile, ua);
         };
       }
 

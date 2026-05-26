@@ -45,41 +45,23 @@ const DEFAULT_CLEAR_RESULT: ClearBrowserArtifactsResult = {
   errors: [],
 };
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function uniquePages(pages: Page[]): Page[] {
-  return [...new Set(pages)];
-}
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 function resolveContext(
   context: BrowserContext | undefined,
   page: Page | undefined,
 ): BrowserContext {
   const resolved = context ?? page?.context();
-
-  if (!resolved) {
-    throw new Error("clear artifacts requires a page or browser context");
-  }
-
+  if (!resolved) throw new Error("clear artifacts requires a page or browser context");
   return resolved;
 }
 
-function pagesForContext({
-  context,
-  page,
-  pages,
-}: {
-  context: BrowserContext;
-  page?: Page;
-  pages?: Page[];
-}): Page[] {
-  return uniquePages([
-    ...(pages ?? []),
-    ...(page ? [page] : []),
-    ...context.pages(),
-  ]);
+function pagesForContext(
+  context: BrowserContext,
+  page?: Page,
+  extra?: Page[],
+): Page[] {
+  return [...new Set([...(extra ?? []), ...(page ? [page] : []), ...context.pages()])];
 }
 
 async function clearPageStorage(
@@ -153,10 +135,8 @@ async function withCDPSession<T>(
 ): Promise<T | undefined> {
   const page = pages[0];
   if (!page) return undefined;
-
   const session = await context.newCDPSession(page).catch(() => undefined);
   if (!session) return undefined;
-
   try {
     return await callback(session);
   } finally {
@@ -182,19 +162,15 @@ async function clearCdpStorage(
   result: ClearBrowserArtifactsResult,
 ): Promise<void> {
   const resolvedOrigins = await storageOrigins(context, origins);
-
   if (resolvedOrigins.length === 0) return;
 
   await withCDPSession(context, pages, async (session) => {
     for (const origin of resolvedOrigins) {
       try {
-        await session.send("Storage.clearDataForOrigin", {
-          origin,
-          storageTypes: "all",
-        });
+        await session.send("Storage.clearDataForOrigin", { origin, storageTypes: "all" });
         result.cdpOrigins++;
       } catch (error) {
-        result.errors.push(errorMessage(error));
+        result.errors.push(errMsg(error));
       }
     }
   });
@@ -212,53 +188,33 @@ export async function clearSessionArtifacts({
   origins,
 }: ClearSessionArtifactsOptions): Promise<ClearBrowserArtifactsResult> {
   const context = resolveContext(explicitContext, page);
-  const pages = pagesForContext({ context, page, pages: explicitPages });
-  const result: ClearBrowserArtifactsResult = {
-    ...DEFAULT_CLEAR_RESULT,
-    errors: [],
-  };
+  const pages = pagesForContext(context, page, explicitPages);
+  const result: ClearBrowserArtifactsResult = { ...DEFAULT_CLEAR_RESULT, errors: [] };
 
   if (cookies) {
-    await context
-      .clearCookies(cookieOptions)
-      .then(() => {
-        result.cookies = true;
-      })
-      .catch((error) => result.errors.push(errorMessage(error)));
+    await context.clearCookies(cookieOptions)
+      .then(() => { result.cookies = true; })
+      .catch((e) => result.errors.push(errMsg(e)));
   }
 
   if (headers) {
-    await context
-      .setExtraHTTPHeaders({})
-      .then(() => {
-        result.headers = true;
-      })
-      .catch((error) => result.errors.push(errorMessage(error)));
-
-    await Promise.all(
-      pages.map((targetPage) =>
-        targetPage.setExtraHTTPHeaders({}).catch((error) => {
-          result.errors.push(errorMessage(error));
-        }),
-      ),
-    );
+    await context.setExtraHTTPHeaders({})
+      .then(() => { result.headers = true; })
+      .catch((e) => result.errors.push(errMsg(e)));
+    await Promise.all(pages.map((p) =>
+      p.setExtraHTTPHeaders({}).catch((e) => result.errors.push(errMsg(e))),
+    ));
   }
 
   if (permissions) {
-    await context
-      .clearPermissions()
-      .then(() => {
-        result.permissions = true;
-      })
-      .catch((error) => result.errors.push(errorMessage(error)));
+    await context.clearPermissions()
+      .then(() => { result.permissions = true; })
+      .catch((e) => result.errors.push(errMsg(e)));
   }
 
   if (storage) {
-    const cleared = await Promise.all(
-      pages.map((targetPage) => clearPageStorage(targetPage, origins)),
-    );
+    const cleared = await Promise.all(pages.map((p) => clearPageStorage(p, origins)));
     result.storagePages = cleared.filter(Boolean).length;
-
     await clearCdpStorage(context, pages, origins, result);
   }
 
@@ -279,27 +235,17 @@ export async function clearBrowserArtifacts({
   serviceWorkers = true,
 }: ClearBrowserArtifactsOptions): Promise<ClearBrowserArtifactsResult> {
   const context = resolveContext(explicitContext, page);
-  const pages = pagesForContext({ context, page, pages: explicitPages });
+  const pages = pagesForContext(context, page, explicitPages);
   const result = await clearSessionArtifacts({
-    page,
-    context,
-    pages,
-    cookies,
-    cookieOptions,
-    storage,
-    headers,
-    permissions,
-    origins,
+    page, context, pages, cookies, cookieOptions, storage, headers, permissions, origins,
   });
 
   if (cache) {
     const pageCaches = await Promise.all(pages.map(clearPageCache));
     result.cachePages = pageCaches.filter(Boolean).length;
-
     await withCDPSession(context, pages, async (session) => {
-      await session
-        .send("Network.clearBrowserCache")
-        .catch((error) => result.errors.push(errorMessage(error)));
+      await session.send("Network.clearBrowserCache")
+        .catch((e) => result.errors.push(errMsg(e)));
     });
   }
 
