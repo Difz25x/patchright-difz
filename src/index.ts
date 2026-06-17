@@ -17,6 +17,7 @@ import {
 import { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 import { installTurnstileAutoSolver } from "./turnstile.js";
 import type { TurnstileOption } from "./turnstile.js";
+import { installStealth, STEALTH_LAUNCH_ARGS } from "./stealth.js";
 
 installMainWorldEvaluateDefaults();
 
@@ -33,6 +34,7 @@ export {
   installRealCursorContext,
 } from "./cursor.js";
 export { installMainWorldEvaluateDefaults } from "./mainWorld.js";
+export { applyStealthToPage, installStealth } from "./stealth.js";
 export {
   checkTurnstile,
   getCloudflareData,
@@ -108,10 +110,11 @@ function splitTurnstileOption<T extends object | undefined>(
   return { patchrightOptions: rest as T, turnstile: turnstile as TurnstileOption | undefined };
 }
 
-function setupContext(
+async function setupContext(
   context: BrowserContext,
   turnstile?: TurnstileOption,
-): void {
+): Promise<void> {
+  await installStealth(context);
   installRealCursorContext(context);
   if (turnstile) installTurnstileAutoSolver(context, turnstile);
 }
@@ -127,7 +130,7 @@ function wrapBrowser(
         return async (options?: WithTurnstile<BrowserNewContextOptions>) => {
           const { patchrightOptions, turnstile } = splitTurnstileOption(options);
           const context = await target.newContext(withDefaultUserAgent(patchrightOptions, defaultUserAgent));
-          setupContext(context, turnstile ?? defaultTurnstile);
+          await setupContext(context, turnstile ?? defaultTurnstile);
           return context;
         };
       }
@@ -137,7 +140,7 @@ function wrapBrowser(
           const { patchrightOptions, turnstile } = splitTurnstileOption(options);
           const page = await target.newPage(withDefaultUserAgent(patchrightOptions, defaultUserAgent));
           installRealCursor(page);
-          setupContext(page.context(), turnstile ?? defaultTurnstile);
+          await setupContext(page.context(), turnstile ?? defaultTurnstile);
           return page;
         };
       }
@@ -146,6 +149,15 @@ function wrapBrowser(
       return typeof value === "function" ? value.bind(target) : value;
     },
   }) as BrowserWithTurnstile;
+}
+
+function ensureStealthArgs(options: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!options) return { args: [...STEALTH_LAUNCH_ARGS] };
+  const existing = (options.args as string[]) || [];
+  const combined = existing.length > 0
+    ? [...existing, ...STEALTH_LAUNCH_ARGS.filter((a) => !existing.includes(a))]
+    : [...STEALTH_LAUNCH_ARGS];
+  return { ...options, args: combined };
 }
 
 function wrapChromium(browserType: BrowserType): ChromiumWithTurnstile {
@@ -157,8 +169,11 @@ function wrapChromium(browserType: BrowserType): ChromiumWithTurnstile {
           options?: WithTurnstile<LaunchPersistentContextOptions>,
         ) => {
           const { patchrightOptions, turnstile } = splitTurnstileOption(options);
-          const context = await target.launchPersistentContext(userDataDir, withHeadlessUserAgent(patchrightOptions));
-          setupContext(context, turnstile);
+          const context = await target.launchPersistentContext(
+            userDataDir,
+            ensureStealthArgs(withHeadlessUserAgent(patchrightOptions) as Record<string, unknown>),
+          );
+          await setupContext(context, turnstile);
           return context;
         };
       }
@@ -167,7 +182,11 @@ function wrapChromium(browserType: BrowserType): ChromiumWithTurnstile {
         return async (options?: WithTurnstile<LaunchOptions>) => {
           const { patchrightOptions, turnstile } = splitTurnstileOption(options);
           const ua = patchrightOptions?.headless === false ? undefined : getHeadlessUserAgent(patchrightOptions);
-          return wrapBrowser(await target.launch(patchrightOptions), turnstile, ua);
+          return wrapBrowser(
+            await target.launch(ensureStealthArgs(patchrightOptions as Record<string, unknown>) as Parameters<typeof target.launch>[0]),
+            turnstile,
+            ua,
+          );
         };
       }
 

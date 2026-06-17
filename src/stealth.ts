@@ -16,29 +16,18 @@ export const STEALTH_LAUNCH_ARGS: readonly string[] = [
 const STEALTH_SCRIPT = `
 (function(){
   // ═══════════════════════════════════════════════════════════════
-  // 1. navigator.webdriver — Proxy hiding (gold standard)
-  //    Real browser: 'webdriver' property doesn't exist at all.
-  //    Using Proxy on navigator.__proto__ so property descriptor
-  //    is identical to a real browser (not a redefined property).
+  // 1. navigator.webdriver — complete hiding
+  //    Use Object.defineProperty on Navigator.prototype directly.
+  //    Proxy-on-__proto__ approach fails because setPrototypeOf
+  //    is blocked on navigator in modern Chromium.
   // ═══════════════════════════════════════════════════════════════
   try {
-    var navProto = navigator.__proto__;
-    var proxyHandler = {
-      get: function(target, key) {
-        if (key === 'webdriver') return undefined;
-        return target[key];
-      },
-      has: function(target, key) {
-        if (key === 'webdriver') return false;
-        return key in target;
-      },
-      getOwnPropertyDescriptor: function(target, key) {
-        if (key === 'webdriver') return undefined;
-        return Object.getOwnPropertyDescriptor(target, key);
-      }
-    };
-    var origProto = Object.create(navProto);
-    Object.setPrototypeOf(navigator, new Proxy(origProto, proxyHandler));
+    Object.defineProperty(Navigator.prototype, 'webdriver', {
+      get: function() { return undefined; },
+      set: function() {},
+      configurable: true,
+      enumerable: true
+    });
   } catch(e) {}
 
   // ═══════════════════════════════════════════════════════════════
@@ -129,15 +118,16 @@ const STEALTH_SCRIPT = `
 
   // ═══════════════════════════════════════════════════════════════
   // 11. Chrome runtime — complete emulation
+  //    window.chrome is a non-configurable browser property that
+  //    can't be deleted or replaced. We add properties to the
+  //    existing chrome object.
+  //    chrome.runtime uses a getter to bypass potential read-only
+  //    restrictions on the 'runtime' name.
   // ═══════════════════════════════════════════════════════════════
   try{
     if(!window.chrome) window.chrome = {};
-    var c = window.chrome;
+    var _c = window.chrome;
 
-    // chrome.app
-    c.app = { isInstalled: false };
-
-    // Event helper — mimics Chrome's internal Event class
     function makeEvent() {
       var listeners = [];
       return {
@@ -148,15 +138,17 @@ const STEALTH_SCRIPT = `
       };
     }
 
-    // chrome.runtime
-    c.runtime = {
+    // app is a simple property — direct assignment works
+    _c.app = { isInstalled: false };
+
+    // runtime needs a getter — name might be reserved
+    var _runtimeValue = {
       connect: function() {
-        var result = {
+        return {
           onMessage: makeEvent(),
           postMessage: function(){},
           disconnect: function(){}
         };
-        return result;
       },
       sendMessage: function() {
         var cb = arguments[arguments.length-1];
@@ -168,9 +160,15 @@ const STEALTH_SCRIPT = `
       onStartup: makeEvent(),
       id: 'nkeimhogjdpnpccoofpliimaahmaaome'
     };
+    Object.defineProperty(_c, 'runtime', {
+      get: function() { return _runtimeValue; },
+      set: function(v) { _runtimeValue = v; },
+      configurable: true,
+      enumerable: true
+    });
 
-    // chrome.csi()
-    c.csi = function() {
+    // csi
+    _c.csi = function() {
       var t = performance.timing || {};
       return {
         onloadT: t.loadEventEnd || 0,
@@ -180,8 +178,8 @@ const STEALTH_SCRIPT = `
       };
     };
 
-    // chrome.loadTimes()
-    c.loadTimes = function() {
+    // loadTimes
+    _c.loadTimes = function() {
       return {
         requestTime: 0,
         startLoadTime: 0,

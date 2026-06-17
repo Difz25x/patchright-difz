@@ -27,8 +27,14 @@
     "SECURITY.md"
   ],
   "scripts": {
+    "dev": "tsc --watch",
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
+    "test": "npx tsx test.js",
+    "test:cursor": "npx tsx test.js --cursor-only",
+    "test:headless": "npx tsx test.js --headless",
+    "test:nopecha": "npx tsx test.js --nopecha",
+    "test:2captcha": "npx tsx test2.js --turnstile-only",
     "publish": "node ./scripts/publish.js"
   },
   "keywords": [
@@ -44,6 +50,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.6.2",
+    "tsx": "^4.19.0",
     "typescript": "^6.0.3"
   }
 }

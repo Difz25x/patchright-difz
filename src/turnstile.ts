@@ -851,6 +851,12 @@ async function hasTurnstileFallback(page: Page): Promise<boolean> {
 }
 
 async function isManagedChallengePage(page: Page): Promise<boolean> {
+  // Quick URL check — Cloudflare challenge pages always have these params
+  const url = page.url();
+  if (url.includes("__cf_chl_rt_tk") || url.includes("challenge-platform")) {
+    return true;
+  }
+
   return page
     .evaluate(() => {
       const title = document.title || "";
