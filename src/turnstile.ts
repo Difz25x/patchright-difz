@@ -1,4 +1,4 @@
-import type { BrowserContext, ElementHandle, Locator, Page, CDPSession } from "patchright";
+import type { BrowserContext, ElementHandle, Locator, Page } from "patchright";
 import { installRealCursor } from "./cursor.js";
 
 type BoundingBox = {
@@ -1503,115 +1503,6 @@ async function installPageChangeSignals(
   return disposable;
 }
 
-// ── CDP Network Monitors ───────────────────────────────────────────────
-// These provide faster-than-polling detection by watching CDP events.
-
-type CDPMonitor = {
-  dispose: () => void;
-  /** Resolves when cf_clearance cookie is detected via network response */
-  clearancePromise: Promise<void>;
-};
-
-function setupChallengeCDPMonitor(page: Page): CDPMonitor {
-  let resolve: (() => void) | undefined;
-  const clearancePromise = new Promise<void>((r) => { resolve = r; });
-  let cdpSession: CDPSession | undefined;
-  let disposed = false;
-
-  // Store handler references for proper cleanup
-  let onResponseReceived: ((params: {
-    response?: { headers?: Record<string, string> };
-  }) => void) | undefined;
-
-  const getCDP = async (): Promise<CDPSession | undefined> => {
-    try {
-      const session = await (page.context() as any).newCDPSession(page).catch(() => undefined);
-      return session as CDPSession | undefined;
-    } catch { return undefined; }
-  };
-
-  // Initialize CDP session asynchronously
-  getCDP().then((session) => {
-    if (disposed || !session) return;
-    cdpSession = session;
-
-    // Listen for Set-Cookie headers that contain cf_clearance
-    onResponseReceived = (params) => {
-      if (disposed) return;
-      const headers = params.response?.headers;
-      if (!headers) return;
-      for (const [key, value] of Object.entries(headers)) {
-        if (key.toLowerCase() === "set-cookie" && value.includes("cf_clearance")) {
-          resolve?.();
-          return;
-        }
-        if (key.toLowerCase() === "set-cookie" && /cf_clearance=([^;]+)/i.test(value)) {
-          resolve?.();
-          return;
-        }
-      }
-    };
-
-    session.on("Network.responseReceived", onResponseReceived);
-    session.send("Network.enable").catch(() => undefined);
-  }).catch(() => undefined);
-
-  return {
-    dispose: () => {
-      disposed = true;
-      if (cdpSession && onResponseReceived) {
-        cdpSession.off("Network.responseReceived", onResponseReceived);
-      }
-      if (cdpSession) {
-        cdpSession.detach().catch(() => undefined);
-      }
-    },
-    clearancePromise,
-  };
-}
-
-function setupTurnstileNetworkDetector(
-  page: Page,
-  onDetected: (url: string) => void,
-): () => void {
-  let cdpSession: CDPSession | undefined;
-  let disposed = false;
-
-  const getCDP = async (): Promise<CDPSession | undefined> => {
-    try {
-      const session = await (page.context() as any).newCDPSession(page).catch(() => undefined);
-      return session as CDPSession | undefined;
-    } catch { return undefined; }
-  };
-
-  getCDP().then((session) => {
-    if (disposed || !session) return;
-    cdpSession = session;
-
-    const onRequestWillBeSent = (params: { request?: { url?: string } }) => {
-      if (disposed) return;
-      const url = params.request?.url ?? "";
-      if (
-        url.includes("challenges.cloudflare.com") ||
-        url.includes("/turnstile/") ||
-        url.includes("cf-turnstile")
-      ) {
-        onDetected(url);
-      }
-    };
-
-    session.on("Network.requestWillBeSent", onRequestWillBeSent);
-    session.send("Network.enable").catch(() => undefined);
-  });
-
-  return () => {
-    disposed = true;
-    if (cdpSession) {
-      cdpSession.detach().catch(() => undefined);
-    }
-  };
-}
-
 function watchTurnstilePage(
   page: Page,
   options: NormalizedTurnstileOptions,
@@ -1680,90 +1571,62 @@ function watchTurnstilePage(
           );
         }
 
-        // Actively wait for managed challenge to resolve.
-        // Uses CDP network monitor + poll for fastest detection.
-        try {
-          const cdpMonitor = setupChallengeCDPMonitor(page);
-          const contextForCookies = page.context();
-          const pollStart = Date.now();
-          const maxWait = 45000; // 45s max wait
+        // Wait for managed challenge to resolve — cookie-only polling.
+        // No CDP session needed; cookies are reliable enough and avoid the
+        // detectable CDP session creation.
+        const contextForCookies = page.context();
+        const pollStart = Date.now();
+        const maxWait = 45000;
 
-          for (let i = 0; i < 90; i++) {
-            if (closed || page.isClosed()) { cdpMonitor.dispose(); return; }
+        for (let i = 0; i < 90; i++) {
+          if (closed || page.isClosed()) return;
 
-            // Race between CDP event and polling — whichever fires first wins
-            const cdpReady = Promise.race([
-              cdpMonitor.clearancePromise.then(() => true),
-              new Promise<boolean>((r) => setTimeout(() => r(false), 200)),
-            ]);
-
-            if (await cdpReady) {
-              // Double-check via cookies to be sure
-              const cookies = await contextForCookies.cookies().catch(() => []);
-              if (cookies.some((c) => c.name === "cf_clearance")) {
-                options.logger?.("cf_clearance detected via CDP — challenge resolved");
-                cdpMonitor.dispose();
-                nextClickAt = 0;
-                return;
-              }
-            }
-
-            // Check 1: cf_clearance cookie appeared (standard poll)
-            const cookies = await contextForCookies.cookies().catch(() => []);
-            const hasClearance = cookies.some((c) => c.name === "cf_clearance");
-            if (hasClearance) {
-              options.logger?.("cf_clearance cookie found — challenge resolved");
-              cdpMonitor.dispose();
-              nextClickAt = 0;
-              return;
-            }
-
-            // Check 2: Page URL/title changed from challenge page
-            const url = page.url();
-            const title = await page.title().catch(() => "");
-            if (
-              !/just a moment|performing security|checking your browser/i.test(title) &&
-              !/challenge-platform/i.test(url)
-            ) {
-              options.logger?.("page changed from challenge — resuming");
-              cdpMonitor.dispose();
-              nextClickAt = 0;
-              return;
-            }
-
-            // Check 3: DOM check for Turnstile widgets appearing after challenge
-            const hasCfWidgets = await page
-              .evaluate(() => {
-                const hasIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
-                const hasTurnstile = document.querySelector(".cf-turnstile, [data-sitekey]");
-                const tokenFields = document.querySelectorAll(
-                  '[name="cf-turnstile-response"], [name="turnstile-response"]',
-                );
-                return Boolean(hasIframe || hasTurnstile || tokenFields.length > 0);
-              })
-              .catch(() => false);
-            if (hasCfWidgets) {
-              options.logger?.("turnstile elements appeared after challenge — resuming");
-              cdpMonitor.dispose();
-              nextClickAt = 0;
-              return;
-            }
-
-            // Timeout safety
-            if (Date.now() - pollStart > maxWait) {
-              options.logger?.("managed challenge wait timeout; will retry");
-              cdpMonitor.dispose();
-              nextClickAt = Date.now() + 5000;
-              return;
-            }
-
-            await page.waitForTimeout(600).catch(() => undefined);
+          // Check 1: cf_clearance cookie appeared
+          const cookies = await contextForCookies.cookies().catch(() => []);
+          if (cookies.some((c) => c.name === "cf_clearance")) {
+            options.logger?.("cf_clearance cookie found — challenge resolved");
+            nextClickAt = 0;
+            return;
           }
-          cdpMonitor.dispose();
-        } catch {
-          // fall through — interval will pick it up next cycle
-        }
 
+          // Check 2: Page URL/title changed from challenge page
+          const url = page.url();
+          const title = await page.title().catch(() => "");
+          if (
+            !/just a moment|performing security|checking your browser/i.test(title) &&
+            !/challenge-platform/i.test(url)
+          ) {
+            options.logger?.("page changed from challenge — resuming");
+            nextClickAt = 0;
+            return;
+          }
+
+          // Check 3: Turnstile elements appeared after challenge
+          const hasCfWidgets = await page
+            .evaluate(() => {
+              const hasIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+              const hasTurnstile = document.querySelector(".cf-turnstile, [data-sitekey]");
+              const tokenFields = document.querySelectorAll(
+                '[name="cf-turnstile-response"], [name="turnstile-response"]',
+              );
+              return Boolean(hasIframe || hasTurnstile || tokenFields.length > 0);
+            })
+            .catch(() => false);
+          if (hasCfWidgets) {
+            options.logger?.("turnstile elements appeared after challenge — resuming");
+            nextClickAt = 0;
+            return;
+          }
+
+          // Timeout safety
+          if (Date.now() - pollStart > maxWait) {
+            options.logger?.("managed challenge wait timeout; will retry");
+            nextClickAt = Date.now() + 5000;
+            return;
+          }
+
+          await page.waitForTimeout(600).catch(() => undefined);
+        }
         return;
       }
 
