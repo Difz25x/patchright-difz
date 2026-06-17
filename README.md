@@ -196,16 +196,11 @@ await countTurnstileTokens(page);
 await isCloudflareManagedChallenge({ page });
 
 const data = await getCloudflareData({ page });
-// data.turnstile.tokens, data.cloudflareCookies, etc.
-```
+// data.sitekeys, data.cloudflareCookies, etc.
 
-Token values and clearance cookies are excluded by default. Pass `collectSensitiveData: true` to include them:
-
-```ts
-const data = await getCloudflareData({
-  page,
-  collectSensitiveData: true,
-});
+> **Note:** Turnstile token values and `cf_clearance` cookie values are
+> automatically stripped from responses. This is intentional to prevent
+> abuse and satisfy supply-chain security requirements.
 ```
 
 ## Cleanup

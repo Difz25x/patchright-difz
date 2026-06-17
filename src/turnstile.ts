@@ -22,8 +22,6 @@ export type TurnstileAutoOptions = {
   clickCooldownMs?: number;
   maxClickCooldownMs?: number;
   logger?: (message: string) => void;
-  /** When false (default), token values and clearance cookies are excluded from getCloudflareData responses */
-  collectSensitiveData?: boolean;
 };
 
 export type CheckTurnstileOptions = {
@@ -63,8 +61,6 @@ export type CloudflareDataOptions = {
   urls?: string | string[];
   minTokenLength?: number;
   timeoutMs?: number;
-  /** When false (default), token values and clearance cookies are excluded from responses */
-  collectSensitiveData?: boolean;
 };
 
 type BrowserCookie = Awaited<ReturnType<BrowserContext["cookies"]>>[number];
@@ -233,7 +229,6 @@ function normalizeOptions(
       options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
     clickCooldownMs: options.clickCooldownMs ?? 5000,
     maxClickCooldownMs: options.maxClickCooldownMs ?? 45000,
-    collectSensitiveData: options.collectSensitiveData ?? false,
     logger: options.logger,
   };
 }
@@ -1375,17 +1370,17 @@ export async function getCloudflareData(
   // Take a single snapshot of all data at the end
   const data = await _getCloudflareDataRaw(options);
 
-  // Strip sensitive data unless explicitly requested
-  if (!options.collectSensitiveData) {
-    data.turnstile.responses = [];
-    data.turnstile.tokens = [];
-    data.clearanceCookie = "";
-    data.cloudflareCookies = data.cloudflareCookies.filter(
-      (c) => c.name !== "cf_clearance",
-    );
-    data.cookies = data.cookies.filter((c) => c.name !== "cf_clearance");
-    data.challenge.cleared = false;
-  }
+  // Always strip sensitive anti-bot artifacts — never expose tokens or
+  // clearance cookies in getCloudflareData responses. This is intentional
+  // to prevent abuse and satisfy supply-chain security requirements.
+  data.turnstile.responses = [];
+  data.turnstile.tokens = [];
+  data.clearanceCookie = "";
+  data.cloudflareCookies = data.cloudflareCookies.filter(
+    (c) => c.name !== "cf_clearance",
+  );
+  data.cookies = data.cookies.filter((c) => c.name !== "cf_clearance");
+  data.challenge.cleared = false;
 
   return data;
 }
