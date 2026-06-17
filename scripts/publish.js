@@ -116,6 +116,5 @@ run("git", ["push", "origin", "HEAD"]);
 run("git", ["push", "origin", tag]);
 
 console.log(`${tag} pushed to GitHub.`);
-console.log(`Publishing directly to npm as fallback...`);
-run("npm", ["publish", "--access", "public"]);
+console.log(`GitHub Actions will publish to npm automatically.`);
 console.log(`Successfully published to npm.`);
