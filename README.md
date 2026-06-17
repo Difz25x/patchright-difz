@@ -19,11 +19,12 @@ import { chromium } from "patchright-difz";
 const browser = await chromium.launch({
   headless: false,
   channel: "chrome",
-  turnstile: true, // auto-solve turnstile
+  turnstile: true, // auto-solve turnstile widgets on all pages
 });
 
 const page = await browser.newPage();
 await page.goto("https://example.com");
+// Turnstile widgets are solved automatically as they appear
 ```
 
 Persistent context works too:
@@ -45,14 +46,68 @@ Headless mode automatically patches the user agent so it doesn't say `HeadlessCh
 
 ```ts
 turnstile: {
-  intervalMs: 500,       // how often to check
+  intervalMs: 500,       // how often to check for new widgets
   foreground: true,      // bring tab to front before clicking
   clickCooldownMs: 5000, // wait between retries
   logger: console.error, // see what's happening
 }
 ```
 
-The solver detects reloads, navigations, DOM changes — you don't need to call anything manually. It moves the mouse around naturally before clicking, adds random thinking delays, and randomizes the approach angle. Managed challenge pages ("Just a moment...") are detected and skipped.
+### Multi-Widget Support
+
+The solver handles **any number of Turnstile widgets** on the same page, even
+if they appear one-by-one over time (e.g., after form submissions or dynamic
+content loads). It uses a **persistent watcher** that:
+
+1. **Scans the DOM** for Turnstile widgets (iframes, empty 300px divs,
+   `cf-turnstile-response` inputs)
+2. **Clicks each unchecked widget** using realistic mouse movements
+3. **Tracks token count** to avoid re-clicking already-solved widgets
+4. **Continues watching** until the page closes — new widgets are detected
+   and solved automatically via `MutationObserver`, history events, and
+   periodic polling
+
+This means you don't need to call anything manually for multi-step flows:
+
+```ts
+await page.goto("https://example.com/form");
+// Widget 1 appears → auto-clicked ✓
+
+await page.fill("#field", "value");
+await page.click("#next-step");
+// Widget 2 appears after navigation → auto-clicked ✓
+
+await page.click("#submit");
+// Widget 3 appears on submit → auto-clicked ✓
+```
+
+### Counting Tokens
+
+If you need to check how many widgets have been solved:
+
+```ts
+import { countTurnstileTokens } from "patchright-difz";
+
+const count = await countTurnstileTokens(page);
+console.log(`${count} Turnstile widgets solved`);
+```
+
+This counts every unique `cf-turnstile-response` value in the DOM, so each
+solved widget contributes 1 to the count.
+
+### Managed Challenge Detection
+
+Cloudflare managed challenge pages ("Just a moment...") are detected via
+URL parameters (`__cf_chl_rt_tk`) and page content. When a challenge is
+detected, the solver:
+
+1. Tries to click any Turnstile checkbox on the challenge page itself
+2. Polls for the `cf_clearance` cookie (up to 45s)
+3. Monitors URL/title changes that signal challenge resolution
+4. Resumes normal widget scanning once the challenge passes
+
+No CDP (Chrome DevTools Protocol) sessions are created for monitoring —
+the solver uses cookie polling and DOM checks to avoid detectable signals.
 
 ## Real Cursor
 
@@ -110,18 +165,34 @@ import { installMouseHelper } from "patchright-difz";
 await installMouseHelper(page); // shows a dot following the cursor
 ```
 
+## Stealth & Anti-Detection
+
+The browser is patched against common automation fingerprinting checks:
+
+| Signal | Protection |
+|--------|-----------|
+| `navigator.webdriver` | Hidden via `Navigator.prototype` getter — returns `undefined`, `"webdriver" in navigator` → `false` |
+| `window.chrome` | Full emulation: `runtime.connect/sendMessage/onMessage`, `csi()`, `loadTimes()` with realistic timing |
+| WebGL vendor/renderer | Spoofed to `"Google Inc. (Intel)"` / `"Intel Iris OpenGL Engine"` |
+| `WEBGL_debug_renderer_info` | Extension kept accessible (not nulled) — only blocked in cross-origin iframes on real browsers |
+| Canvas fingerprint | 2-3% subtle pixel perturbation per `toDataURL()` call |
+| AudioContext fingerprint | Subtle channel noise on oscillator connect (1% chance) |
+| Launch args | No `--disable-web-security`, `--no-sandbox`, or `--disable-gpu` — real browser defaults |
+
 ## Cloudflare Helpers
 
 ```ts
 import {
   hasTurnstile,
   isTurnstileSolved,
+  countTurnstileTokens,
   isCloudflareManagedChallenge,
   getCloudflareData,
 } from "patchright-difz";
 
 await hasTurnstile({ page });
 await isTurnstileSolved({ page });
+await countTurnstileTokens(page);
 await isCloudflareManagedChallenge({ page });
 
 const data = await getCloudflareData({ page });

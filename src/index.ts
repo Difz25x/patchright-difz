@@ -37,6 +37,7 @@ export { installMainWorldEvaluateDefaults } from "./mainWorld.js";
 export { applyStealthToPage, installStealth } from "./stealth.js";
 export {
   checkTurnstile,
+  countTurnstileTokens,
   getCloudflareData,
   hasTurnstile,
   installTurnstileAutoSolver,

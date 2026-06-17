@@ -198,6 +198,21 @@ type SolveTurnstileResult = {
   status: "clicked" | "managed-challenge" | "solved" | "not-found";
 };
 
+/**
+ * Identifier for a Turnstile widget on the page.
+ * Generated from sitekey + DOM path to uniquely identify each widget.
+ */
+export type TurnstileWidgetId = string;
+
+/**
+ * Info about a detected Turnstile widget.
+ */
+export type TurnstileWidgetInfo = {
+  widgetId: TurnstileWidgetId;
+  sitekey?: string;
+  solved: boolean;
+};
+
 const watchedPages = new WeakMap<Page, PageWatch>();
 
 function normalizeOptions(
@@ -1224,6 +1239,35 @@ export async function isTurnstileSolved({
   return state.tokenFound;
 }
 
+/**
+ * Count how many valid Turnstile tokens are currently in the DOM.
+ * Useful for multi-widget pages: each widget produces one token, so
+ * counting tokens reveals how many widgets have been solved so far.
+ */
+export async function countTurnstileTokens(
+  page: Page,
+  minTokenLength = DEFAULT_TOKEN_MIN_LENGTH,
+): Promise<number> {
+  return page
+    .evaluate((minLen) => {
+      const inputs = document.querySelectorAll(
+        '[name="cf-turnstile-response"], [name="turnstile-response"], ' +
+        '[data-cf-turnstile-response], [data-turnstile-response]',
+      );
+      let count = 0;
+      for (const el of inputs) {
+        const val =
+          (el as HTMLInputElement).value ||
+          el.getAttribute("data-cf-turnstile-response") ||
+          el.getAttribute("data-turnstile-response") ||
+          "";
+        if (val.trim().length >= minLen) count++;
+      }
+      return count;
+    }, minTokenLength)
+    .catch(() => 0);
+}
+
 export async function _getCloudflareDataRaw({
   page,
   context = page?.context(),
@@ -1378,13 +1422,9 @@ async function solveTurnstileOnce(
     waitAfterClickMs,
   });
 
-  if (await isTurnstileSolved({ page }).catch(() => false)) {
-    return { clicked: false, status: "solved" };
-  }
-
-  if (await isManagedChallengePage(page)) {
-    return { clicked: false, status: "managed-challenge" };
-  }
+  // Removed cf_clearance early return — we always try clicking.
+  // This ensures multi-widget pages get ALL checkboxes clicked,
+  // not just the first one.
 
   // ═══════════════════════════════════════════════════════════════════
   // Strategy 1: Parent of [name="cf-turnstile-response"]
@@ -1422,6 +1462,11 @@ async function solveTurnstileOnce(
   // ═══════════════════════════════════════════════════════════════════
   if (await clickTurnstileFallback(page, clickOptions, attempt)) {
     return verifyClickSolved(page);
+  }
+
+  // If nothing worked and we're on a managed challenge page, signal that.
+  if (await isManagedChallengePage(page).catch(() => false)) {
+    return { clicked: false, status: "managed-challenge" };
   }
 
   return { clicked: false, status: "not-found" };
@@ -1538,6 +1583,7 @@ function watchTurnstilePage(
   let lastManagedChallengeLogAt = 0;
   let cancelScheduledRun: (() => void) | undefined;
   let signalDisposable: DisposableLike | undefined;
+  let lastTokenCount = 0;
 
   const run = async (): Promise<void> => {
     if (closed) return;
@@ -1577,12 +1623,11 @@ function watchTurnstilePage(
           );
         }
 
-        // Wait for managed challenge to resolve — cookie-only polling.
-        // No CDP session needed; cookies are reliable enough and avoid the
-        // detectable CDP session creation.
+        // Wait for managed challenge to resolve — actively try to click
         const contextForCookies = page.context();
         const pollStart = Date.now();
         const maxWait = 45000;
+        let lastClickTry = 0;
 
         for (let i = 0; i < 90; i++) {
           if (closed || page.isClosed()) return;
@@ -1591,6 +1636,7 @@ function watchTurnstilePage(
           const cookies = await contextForCookies.cookies().catch(() => []);
           if (cookies.some((c) => c.name === "cf_clearance")) {
             options.logger?.("cf_clearance cookie found — challenge resolved");
+            lastTokenCount = 0;
             nextClickAt = 0;
             return;
           }
@@ -1603,28 +1649,30 @@ function watchTurnstilePage(
             !/challenge-platform/i.test(url)
           ) {
             options.logger?.("page changed from challenge — resuming");
+            lastTokenCount = 0;
             nextClickAt = 0;
             return;
           }
 
-          // Check 3: Turnstile elements appeared after challenge
-          const hasCfWidgets = await page
-            .evaluate(() => {
-              const hasIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
-              const hasTurnstile = document.querySelector(".cf-turnstile, [data-sitekey]");
-              const tokenFields = document.querySelectorAll(
-                '[name="cf-turnstile-response"], [name="turnstile-response"]',
-              );
-              return Boolean(hasIframe || hasTurnstile || tokenFields.length > 0);
-            })
-            .catch(() => false);
-          if (hasCfWidgets) {
-            options.logger?.("turnstile elements appeared after challenge — resuming");
-            nextClickAt = 0;
-            return;
+          // Periodically try to click Turnstile checkbox (every ~3s)
+          if (Date.now() - lastClickTry > 3000) {
+            lastClickTry = Date.now();
+            const clickResult = await solveTurnstileOnce({
+              page,
+              selectors: options.selectors,
+              maxCandidatesPerSelector: options.maxCandidatesPerSelector,
+              foreground: options.foreground,
+              clickDelayMs: options.clickDelayMs,
+              mouseMoveSteps: options.mouseMoveSteps,
+              waitAfterClickMs: options.waitAfterClickMs,
+              attempt: clickAttempts,
+            });
+            if (clickResult.clicked) {
+              clickAttempts++;
+              options.logger?.(`turnstile clicked on challenge page (#${clickAttempts})`);
+            }
           }
 
-          // Timeout safety
           if (Date.now() - pollStart > maxWait) {
             options.logger?.("managed challenge wait timeout; will retry");
             nextClickAt = Date.now() + 5000;
@@ -1636,33 +1684,34 @@ function watchTurnstilePage(
         return;
       }
 
-      if (result.status === "solved") {
-        clickAttempts = 0;
-        nextClickAt = 0;
+      if (result.status === "solved" || result.clicked) {
+        if (result.clicked) {
+          clickAttempts++;
+          const baseCooldown = Math.min(
+            options.maxClickCooldownMs,
+            options.clickCooldownMs * Math.min(clickAttempts, 6),
+          );
+          const jitter = 0.75 + Math.random() * 0.5;
+          nextClickAt = Date.now() + Math.round(baseCooldown * jitter);
+          options.logger?.(
+            `turnstile candidate clicked (attempt #${clickAttempts}); next retry in ${Math.round(baseCooldown * jitter)}ms`,
+          );
+        } else {
+          // Solved by previous click — check if more widgets remain
+          clickAttempts = 0;
+          const currentTokens = await countTurnstileTokens(page).catch(() => 0);
+          if (currentTokens > lastTokenCount) {
+            options.logger?.(`widget solved (${currentTokens} total tokens); watching for more...`);
+            lastTokenCount = currentTokens;
+          }
+          nextClickAt = options.intervalMs; // Keep polling for new widgets
+        }
         return;
       }
 
       if (result.status === "not-found") {
-        // Don't reset attempts on not-found to allow strategy on next check
         nextClickAt = 0;
         return;
-      }
-
-      if (result.clicked) {
-        clickAttempts++;
-
-        // Exponential backoff with jitter
-        const baseCooldown = Math.min(
-          options.maxClickCooldownMs,
-          options.clickCooldownMs * Math.min(clickAttempts, 6),
-        );
-        const jitter = 0.75 + Math.random() * 0.5; // ±25% jitter
-        const cooldown = Math.round(baseCooldown * jitter);
-
-        nextClickAt = Date.now() + cooldown;
-        options.logger?.(
-          `turnstile candidate clicked (attempt #${clickAttempts}); next retry in ${cooldown}ms`,
-        );
       }
     } catch (error) {
       options.logger?.(error instanceof Error ? error.message : String(error));
