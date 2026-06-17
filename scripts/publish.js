@@ -14,15 +14,7 @@ const tag = `v${pkg.version}`;
 
 // Files to commit on release — only what matters for the npm package.
 // Dev/test artifacts (test.js, .claude, docs/, etc.) stay out of GitHub.
-const RELEASE_FILES = [
-  "dist/",
-  "package.json",
-  "package-lock.json",
-  "README.md",
-  "CHANGELOG.md",
-  "LICENSE",
-  "SECURITY.md",
-];
+// dist/ is gitignored so we force-add it.
 
 function run(command, args) {
   const result = spawn(command, args, {
@@ -112,7 +104,8 @@ if (dryRun) {
   process.exit(0);
 }
 
-run("git", ["add", ...RELEASE_FILES]);
+// dist/ is gitignored — force add so the build output ships with the tag
+run("git", ["add", "-f", "dist/", "package.json", "package-lock.json", "README.md", "LICENSE", "SECURITY.md"]);
 
 if (hasStagedChanges()) {
   run("git", ["commit", "-m", `Release ${tag}`]);
