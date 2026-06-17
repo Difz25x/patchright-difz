@@ -203,7 +203,6 @@ const STEALTH_SCRIPT = `
     Permissions.prototype.query=async function(d){
       var n=d.name;
       if(n==='notifications')return{state:'prompt',onchange:null};
-      if(n==='clipboard-read'||n==='clipboard-write')return{state:'granted',onchange:null};
       if(n==='geolocation')return{state:'prompt',onchange:null};
       if(n==='camera'||n==='microphone')return{state:'prompt',onchange:null};
       return _oq(d);

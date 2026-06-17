@@ -46,7 +46,6 @@ function normalizeOptions(option) {
         waitAfterClickMs: options.waitAfterClickMs ?? DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
         clickCooldownMs: options.clickCooldownMs ?? 5000,
         maxClickCooldownMs: options.maxClickCooldownMs ?? 45000,
-        collectSensitiveData: options.collectSensitiveData ?? false,
         logger: options.logger,
     };
 }
@@ -902,15 +901,15 @@ export async function getCloudflareData(options) {
     }
     // Take a single snapshot of all data at the end
     const data = await _getCloudflareDataRaw(options);
-    // Strip sensitive data unless explicitly requested
-    if (!options.collectSensitiveData) {
-        data.turnstile.responses = [];
-        data.turnstile.tokens = [];
-        data.clearanceCookie = "";
-        data.cloudflareCookies = data.cloudflareCookies.filter((c) => c.name !== "cf_clearance");
-        data.cookies = data.cookies.filter((c) => c.name !== "cf_clearance");
-        data.challenge.cleared = false;
-    }
+    // Always strip sensitive anti-bot artifacts — never expose tokens or
+    // clearance cookies in getCloudflareData responses. This is intentional
+    // to prevent abuse and satisfy supply-chain security requirements.
+    data.turnstile.responses = [];
+    data.turnstile.tokens = [];
+    data.clearanceCookie = "";
+    data.cloudflareCookies = data.cloudflareCookies.filter((c) => c.name !== "cf_clearance");
+    data.cookies = data.cookies.filter((c) => c.name !== "cf_clearance");
+    data.challenge.cleared = false;
     return data;
 }
 export async function isCloudflareManagedChallenge({ page, }) {

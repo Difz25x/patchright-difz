@@ -12,8 +12,6 @@ export type TurnstileAutoOptions = {
     clickCooldownMs?: number;
     maxClickCooldownMs?: number;
     logger?: (message: string) => void;
-    /** When false (default), token values and clearance cookies are excluded from getCloudflareData responses */
-    collectSensitiveData?: boolean;
 };
 export type CheckTurnstileOptions = {
     page: Page;
@@ -48,8 +46,6 @@ export type CloudflareDataOptions = {
     urls?: string | string[];
     minTokenLength?: number;
     timeoutMs?: number;
-    /** When false (default), token values and clearance cookies are excluded from responses */
-    collectSensitiveData?: boolean;
 };
 export type CloudflareCookie = {
     name: string;
