@@ -12,6 +12,18 @@ const dryRun = args.includes("--dry-run");
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 const tag = `v${pkg.version}`;
 
+// Files to commit on release — only what matters for the npm package.
+// Dev/test artifacts (test.js, .claude, docs/, etc.) stay out of GitHub.
+const RELEASE_FILES = [
+  "dist/",
+  "package.json",
+  "package-lock.json",
+  "README.md",
+  "CHANGELOG.md",
+  "LICENSE",
+  "SECURITY.md",
+];
+
 function run(command, args) {
   const result = spawn(command, args, {
     stdio: "inherit",
@@ -100,7 +112,7 @@ if (dryRun) {
   process.exit(0);
 }
 
-run("git", ["add", "-A"]);
+run("git", ["add", ...RELEASE_FILES]);
 
 if (hasStagedChanges()) {
   run("git", ["commit", "-m", `Release ${tag}`]);
