@@ -1,4 +1,4 @@
-import type { BrowserContext, ElementHandle, Locator, Page } from "patchright";
+import type { BrowserContext, ElementHandle, Locator, Page, CDPSession } from "patchright";
 import { installRealCursor } from "./cursor.js";
 
 type BoundingBox = {
@@ -233,17 +233,6 @@ function toCookieData(cookie: BrowserCookie): CloudflareCookie {
   };
 }
 
-function getClickPoint(box: BoundingBox): { x: number; y: number } {
-  const xBase = box.width > 80 ? 30 : box.width / 2;
-  const xNoise = (Math.random() - 0.5) * Math.min(8, box.width * 0.06);
-  const yNoise = (Math.random() - 0.5) * Math.min(6, box.height * 0.08);
-
-  return {
-    x: box.x + xBase + xNoise,
-    y: box.y + box.height / 2 + yNoise,
-  };
-}
-
 function clickOptionsFromCheckOptions({
   foreground = DEFAULT_CLICK_BEHAVIOR.foreground,
   clickDelayMs = DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
@@ -262,62 +251,348 @@ async function preparePageForClick(
   page: Page,
   options: ClickBehaviorOptions,
 ): Promise<void> {
+  // Removed bringToFront() and window.focus() — these are suspicious
+  // automation signals. Real users don't explicitly call window.focus().
   if (!options.foreground) return;
+  await page.waitForTimeout(Math.round(20 + Math.random() * 40)).catch(() => undefined);
+}
 
-  const preDelay = Math.round(20 + Math.random() * 40);
-  await page.waitForTimeout(preDelay).catch(() => undefined);
-  await page.bringToFront().catch(() => undefined);
-  await page
-    .evaluate(() => {
-      window.focus();
-      document.body?.focus?.();
-    })
-    .catch(() => undefined);
+// ── Wander patterns ──────────────────────────────────────────────────
+type WanderPattern = "scan" | "zigzag" | "explore" | "direct";
+
+function pickWander(attempt: number): WanderPattern {
+  const patterns: WanderPattern[] = ["scan", "zigzag", "explore", "direct"];
+  return patterns[attempt % patterns.length];
+}
+
+async function wanderBeforeClick(
+  cursor: import("./cursor.js").RealCursor,
+  page: Page,
+  target: { x: number; y: number },
+  pattern: WanderPattern,
+): Promise<void> {
+  if (pattern === "direct") {
+    // Little to no wander — short thinking pause
+    await page.waitForTimeout(Math.round(40 + Math.random() * 80)).catch(() => undefined);
+    return;
+  }
+
+  if (pattern === "scan") {
+    // Horizontal scanning — looks like reading the page
+    const startX = target.x + (Math.random() - 0.5) * 180;
+    const startY = target.y - 30 - Math.random() * 50;
+    const midX = target.x + (Math.random() - 0.5) * 140;
+    const midY = target.y + (Math.random() - 0.5) * 20;
+
+    await cursor.move({ x: startX, y: startY }, { moveSpeed: 0.5 + Math.random() * 0.4 }).catch(() => undefined);
+    await page.waitForTimeout(Math.round(40 + Math.random() * 100)).catch(() => undefined);
+    await cursor.move({ x: midX, y: midY }, { moveSpeed: 0.6 + Math.random() * 0.5 }).catch(() => undefined);
+    await page.waitForTimeout(Math.round(30 + Math.random() * 60)).catch(() => undefined);
+    return;
+  }
+
+  if (pattern === "zigzag") {
+    // Zigzag approach — mouse moves in a sawtooth pattern toward target
+    const steps = 2 + Math.floor(Math.random() * 3);
+    let cx = target.x + (Math.random() - 0.5) * 100;
+    let cy = target.y - 40 - Math.random() * 40;
+    for (let i = 0; i < steps; i++) {
+      const nx = cx + (target.x - cx) * 0.5 + (Math.random() - 0.5) * 60;
+      const ny = cy + (target.y - cy) * 0.5 + (Math.random() - 0.5) * 40;
+      await cursor.move({ x: nx, y: ny }, { moveSpeed: 0.6 + Math.random() * 0.4 }).catch(() => undefined);
+      await page.waitForTimeout(Math.round(20 + Math.random() * 50)).catch(() => undefined);
+      cx = nx; cy = ny;
+    }
+    return;
+  }
+
+  // "explore" — meander around the area like searching for the checkbox
+  const points = 1 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < points; i++) {
+    const wx = target.x + (Math.random() - 0.5) * 140;
+    const wy = target.y + (Math.random() - 0.5) * 100;
+    await cursor.move({ x: wx, y: wy }, { moveSpeed: 0.4 + Math.random() * 0.6 }).catch(() => undefined);
+    await page.waitForTimeout(Math.round(40 + Math.random() * 120)).catch(() => undefined);
+  }
 }
 
 async function clickBox(
   page: Page,
   box: BoundingBox,
   options: ClickBehaviorOptions,
+  attempt = 0,
 ): Promise<boolean> {
   if (box.width <= 0 || box.height <= 0) return false;
 
-  const point = getClickPoint(box);
+  const style = pickClickStyle();
+  const point = getClickPoint(box, style);
   await preparePageForClick(page, options);
   const cursor = installRealCursor(page);
-  const steps = Math.max(1, options.mouseMoveSteps + Math.round((Math.random() - 0.5) * 4));
 
-  // wander nearby before clicking — looks like a human scanning the page
-  if (Math.random() < 0.6) {
-    const wanderX = point.x + (Math.random() - 0.5) * 120;
-    const wanderY = point.y + (Math.random() - 0.5) * 80;
-    await cursor.move({ x: wanderX, y: wanderY }, { moveSpeed: 0.7 + Math.random() * 0.6 }).catch(() => undefined);
-    await page.waitForTimeout(Math.round(80 + Math.random() * 200)).catch(() => undefined);
-  }
+  // Pre-click wander
+  const wander = pickWander(attempt);
+  await wanderBeforeClick(cursor, page, point, wander);
 
-  // thinking delay — short pause like a human recognizing the checkbox
-  const thinkMs = Math.round(30 + Math.random() * 120);
+  // Thinking delay
+  const thinkMs = Math.round(20 + Math.random() * 100 + attempt * 15);
   await page.waitForTimeout(thinkMs).catch(() => undefined);
+
+  const steps = Math.max(2, options.mouseMoveSteps + Math.round((Math.random() - 0.5) * 6));
 
   await cursor.click(point, {
     moveSpeed: Math.max(1, steps),
-    overshootThreshold: 420,
-    hesitate: Math.round(20 + Math.random() * 60),
-    waitForClick: options.clickDelayMs + Math.round((Math.random() - 0.5) * 16),
+    overshootThreshold: Math.round(380 + Math.random() * 100),
+    hesitate: Math.round(10 + Math.random() * 60 + attempt * 5),
+    waitForClick: options.clickDelayMs + Math.round((Math.random() - 0.5) * 20),
   });
 
   if (options.waitAfterClickMs > 0) {
-    const jitteredWait = Math.round(options.waitAfterClickMs * (0.7 + Math.random() * 0.6));
+    const jitteredWait = Math.round(
+      options.waitAfterClickMs * (0.5 + Math.random() * 0.8) + attempt * 30,
+    );
     await page.waitForTimeout(jitteredWait).catch(() => undefined);
   }
 
   return true;
 }
 
+// ── Verification helper (shared after any click attempt) ─────────────
+async function verifyClickSolved(page: Page): Promise<SolveTurnstileResult> {
+  const verified = await isTurnstileSolved({ page }).catch(() => false);
+  if (!verified) {
+    await page.waitForTimeout(400).catch(() => undefined);
+    const rechecked = await isTurnstileSolved({ page }).catch(() => false);
+    if (rechecked) return { clicked: true, status: "solved" };
+  } else {
+    return { clicked: true, status: "solved" };
+  }
+  return { clicked: true, status: "clicked" };
+}
+
+// ── Reference-style Turnstile checkbox detection ─────────────────────
+// Based on puppeteer-real-browser's approach:
+// Scans empty 300px-wide divs (the invisible clickable widget area)
+// and clicks at x+30 (precise checkbox position).
+
+type CheckboxCandidate = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+async function findTurnstileCheckboxes(page: Page): Promise<CheckboxCandidate[]> {
+  return page
+    .evaluate(() => {
+      const results: CheckboxCandidate[] = [];
+
+      // Pass 1: Strict — zero margin + padding, no children, 290-310px wide
+      document.querySelectorAll("div").forEach((item) => {
+        try {
+          const rect = item.getBoundingClientRect();
+          const style = window.getComputedStyle(item);
+          if (
+            style.margin === "0px" &&
+            style.padding === "0px" &&
+            rect.width > 290 &&
+            rect.width <= 310 &&
+            !item.querySelector("*")
+          ) {
+            results.push({
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            });
+          }
+        } catch (_e) {}
+      });
+
+      // Pass 2: Lenient — just width + empty
+      if (results.length === 0) {
+        document.querySelectorAll("div").forEach((item) => {
+          try {
+            const rect = item.getBoundingClientRect();
+            if (
+              rect.width > 290 &&
+              rect.width <= 310 &&
+              !item.querySelector("*")
+            ) {
+              results.push({
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              });
+            }
+          } catch (_e) {}
+        });
+      }
+
+      return results;
+    })
+    .catch(() => []);
+}
+
+async function clickTurnstileCheckboxDiv(
+  page: Page,
+  checkbox: CheckboxCandidate,
+  options: ClickBehaviorOptions,
+): Promise<boolean> {
+  if (checkbox.width <= 0 || checkbox.height <= 0) return false;
+
+  const clickX = checkbox.x + 30; // +30px from left edge = checkbox position
+  const clickY = checkbox.y + checkbox.height / 2;
+
+  await preparePageForClick(page, options);
+  const cursor = installRealCursor(page);
+
+  await cursor
+    .move({ x: clickX, y: clickY }, { moveSpeed: 1.0 + Math.random() * 0.4 })
+    .catch(() => undefined);
+  await page.waitForTimeout(Math.round(20 + Math.random() * 60)).catch(() => undefined);
+
+  await cursor
+    .click(
+      { x: clickX, y: clickY },
+      {
+        hesitate: Math.round(10 + Math.random() * 40),
+        waitForClick: options.clickDelayMs + Math.round(Math.random() * 20),
+      },
+    )
+    .catch(() => {});
+
+  if (options.waitAfterClickMs > 0) {
+    await page
+      .waitForTimeout(
+        Math.round(options.waitAfterClickMs * (0.5 + Math.random() * 0.5)),
+      )
+      .catch(() => undefined);
+  }
+
+  return true;
+}
+
+async function clickTurnstileCheckboxesByDiv(
+  page: Page,
+  options: ClickBehaviorOptions,
+): Promise<boolean> {
+  const checkboxes = await findTurnstileCheckboxes(page);
+  if (checkboxes.length === 0) return false;
+
+  for (const checkbox of checkboxes) {
+    if (await clickTurnstileCheckboxDiv(page, checkbox, options).catch(() => false)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// ── Response-input parent click ────────────────────────────────────
+// Find [name="cf-turnstile-response"] hidden inputs and click their parent.
+async function clickParentOfTurnstileResponse(
+  page: Page,
+  options: ClickBehaviorOptions,
+): Promise<boolean> {
+  const elements = await page.$$('[name="cf-turnstile-response"]').catch(() => []);
+  if (elements.length === 0) return false;
+
+  for (const element of elements) {
+    try {
+      const parentHandle = await element.evaluateHandle((el) => el.parentElement);
+      const parentEl = parentHandle.asElement();
+      if (!parentEl) { parentHandle.dispose().catch(() => {}); continue; }
+
+      const box = await parentEl.boundingBox();
+      parentHandle.dispose().catch(() => {});
+      if (!box || box.width <= 0 || box.height <= 0) continue;
+
+      // Click at x+30 — the checkbox is precisely 30px from the left edge
+      const clickX = box.x + 30;
+      const clickY = box.y + box.height / 2;
+
+      await preparePageForClick(page, options);
+      const cursor = installRealCursor(page);
+      await cursor
+        .move({ x: clickX, y: clickY }, { moveSpeed: 1.0 + Math.random() * 0.4 })
+        .catch(() => undefined);
+      await page.waitForTimeout(Math.round(20 + Math.random() * 60)).catch(() => undefined);
+      await cursor
+        .click(
+          { x: clickX, y: clickY },
+          {
+            hesitate: Math.round(10 + Math.random() * 40),
+            waitForClick: options.clickDelayMs + Math.round(Math.random() * 20),
+          },
+        )
+        .catch(() => {});
+
+      if (options.waitAfterClickMs > 0) {
+        await page
+          .waitForTimeout(
+            Math.round(options.waitAfterClickMs * (0.5 + Math.random() * 0.5)),
+          )
+          .catch(() => undefined);
+      }
+
+      return true;
+    } catch (_e) {
+      continue;
+    } finally {
+      await element.dispose().catch(() => undefined);
+    }
+  }
+
+  return false;
+}
+
+const TURNSTILE_SIZE_PATTERNS = [
+  // Standard widget (visible checkbox)
+  { minW: 260, maxW: 340, minH: 35, maxH: 90 },
+  // Compact / floating widget
+  { minW: 130, maxW: 200, minH: 100, maxH: 160 },
+  // Inline / button-style
+  { minW: 40, maxW: 120, minH: 20, maxH: 40 },
+  // Large / banner-style challenge
+  { minW: 340, maxW: 600, minH: 90, maxH: 200 },
+] as const;
+
 function looksLikeTurnstileBox(box: BoundingBox): boolean {
-  return (
-    box.width >= 260 && box.width <= 340 && box.height >= 35 && box.height <= 90
+  return TURNSTILE_SIZE_PATTERNS.some(
+    (p) => box.width >= p.minW && box.width <= p.maxW && box.height >= p.minH && box.height <= p.maxH,
   );
+}
+
+type ClickPointStyle = "left" | "center" | "right" | "random";
+
+function pickClickStyle(): ClickPointStyle {
+  const r = Math.random();
+  if (r < 0.35) return "left";
+  if (r < 0.6) return "center";
+  if (r < 0.82) return "right";
+  return "random";
+}
+
+function getClickPoint(box: BoundingBox, style?: ClickPointStyle): { x: number; y: number } {
+  const s = style ?? pickClickStyle();
+
+  let xRatio: number;
+  switch (s) {
+    case "left":   xRatio = 0.15 + Math.random() * 0.2; break;
+    case "center": xRatio = 0.35 + Math.random() * 0.3; break;
+    case "right":  xRatio = 0.65 + Math.random() * 0.2; break;
+    case "random": xRatio = Math.random(); break;
+  }
+
+  const xBase = box.width * xRatio;
+  const yBase = box.height * (0.25 + Math.random() * 0.5);
+  const xNoise = (Math.random() - 0.5) * Math.min(10, box.width * 0.08);
+  const yNoise = (Math.random() - 0.5) * Math.min(8, box.height * 0.1);
+
+  return {
+    x: box.x + Math.max(1, xBase + xNoise),
+    y: box.y + Math.max(1, yBase + yNoise),
+  };
 }
 
 function unique(values: string[]): string[] {
@@ -345,99 +620,58 @@ function scheduleSoon(callback: () => void, delayMs = 75): () => void {
   return () => clearTimeout(timeout);
 }
 
-async function isTurnstileFrameReady(
-  elementOrLocator: Locator | ElementHandle<Element>,
-): Promise<boolean> {
-  const element = (
-    "elementHandle" in elementOrLocator
-      ? await elementOrLocator.elementHandle().catch(() => null)
-      : elementOrLocator
-  ) as ElementHandle<Element> | null;
-
-  if (!element) return true;
-
-  const tagName = await element
-    .evaluate((e: any) => e.tagName?.toLowerCase() || "")
-    .catch(() => "");
-  let ready = true;
-
-  if (tagName === "iframe") {
-    const frame = await element.contentFrame().catch(() => null);
-    if (frame) {
-      ready = await frame
-        .waitForSelector('input[type="checkbox"]', {
-          state: "visible",
-          timeout: 8000,
-        })
-        .then(() => true)
-        .catch(() => false);
-    }
-  }
-
-  if ("elementHandle" in elementOrLocator && element) {
-    await element.dispose().catch(() => undefined);
-  }
-
-  return ready;
-}
-
 async function clickLocatorBox(
   page: Page,
   locator: Locator,
   options: ClickBehaviorOptions,
+  attempt = 0,
 ): Promise<boolean> {
   const box = await locator.boundingBox({ timeout: 1000 }).catch(() => null);
 
   if (!box) return false;
 
-  if (!(await isTurnstileFrameReady(locator))) {
-    return false;
-  }
-
-  const point = getClickPoint(box);
+  const style = pickClickStyle();
+  const point = getClickPoint(box, style);
   await preparePageForClick(page, options);
-  const steps = Math.max(1, options.mouseMoveSteps + Math.round((Math.random() - 0.5) * 4));
   const cursor = installRealCursor(page);
 
-  // wander nearby before clicking
-  if (Math.random() < 0.6) {
-    const wanderX = point.x + (Math.random() - 0.5) * 120;
-    const wanderY = point.y + (Math.random() - 0.5) * 80;
-    await cursor.move({ x: wanderX, y: wanderY }, { moveSpeed: 0.7 + Math.random() * 0.6 }).catch(() => undefined);
-    await page.waitForTimeout(Math.round(80 + Math.random() * 200)).catch(() => undefined);
-  }
+  // Pre-click wander
+  const wander = pickWander(attempt);
+  await wanderBeforeClick(cursor, page, point, wander);
 
-  // thinking delay
-  const thinkMs = Math.round(30 + Math.random() * 120);
+  // Thinking delay
+  const thinkMs = Math.round(20 + Math.random() * 100 + attempt * 15);
   await page.waitForTimeout(thinkMs).catch(() => undefined);
+
+  const steps = Math.max(2, options.mouseMoveSteps + Math.round((Math.random() - 0.5) * 6));
 
   const clickedByCursor = await cursor
     .click(point, {
       moveSpeed: Math.max(1, steps),
-      overshootThreshold: 420,
-      hesitate: Math.round(20 + Math.random() * 60),
-      waitForClick: options.clickDelayMs + Math.round((Math.random() - 0.5) * 16),
+      overshootThreshold: Math.round(380 + Math.random() * 100),
+      hesitate: Math.round(10 + Math.random() * 60 + attempt * 5),
+      waitForClick: options.clickDelayMs + Math.round((Math.random() - 0.5) * 20),
     })
     .then(() => true)
     .catch(() => false);
 
   if (clickedByCursor) {
     if (options.waitAfterClickMs > 0) {
-      const jitteredWait = Math.round(options.waitAfterClickMs * (0.7 + Math.random() * 0.6));
-      await page
-        .waitForTimeout(jitteredWait)
-        .catch(() => undefined);
+      const jitteredWait = Math.round(
+        options.waitAfterClickMs * (0.5 + Math.random() * 0.8) + attempt * 30,
+      );
+      await page.waitForTimeout(jitteredWait).catch(() => undefined);
     }
-
     return true;
   }
 
+  // Fallback — force click via patchright if cursor click failed
   return locator
     .click({
       force: true,
       timeout: 1000,
-      delay: options.clickDelayMs,
-      steps: options.mouseMoveSteps,
+      delay: options.clickDelayMs + Math.round(Math.random() * 20),
+      steps: Math.max(2, options.mouseMoveSteps),
       position: {
         x: Math.max(1, point.x - box.x),
         y: Math.max(1, point.y - box.y),
@@ -451,6 +685,7 @@ async function clickElementOrParentBox(
   page: Page,
   element: ElementHandle<Element>,
   options: ClickBehaviorOptions,
+  attempt = 0,
 ): Promise<boolean> {
   let current: ElementHandle<Element> | null = element;
 
@@ -458,11 +693,7 @@ async function clickElementOrParentBox(
     const box = await current.boundingBox().catch(() => null);
 
     if (box && looksLikeTurnstileBox(box)) {
-      if (!(await isTurnstileFrameReady(current))) {
-        return false;
-      }
-
-      if (await clickBox(page, box, options)) {
+      if (await clickBox(page, box, options, attempt)) {
         return true;
       }
     }
@@ -484,51 +715,85 @@ async function clickElementOrParentBox(
   return false;
 }
 
+// Selector tiers for prioritized scanning — most specific/indicative first
+function buildSelectorTiers(selectors: string[]): [string[], string[]] {
+  const high: string[] = [];
+  const normal: string[] = [];
+  for (const sel of selectors) {
+    if (isOptionalResponseSelector(sel)) continue;
+    // Iframe selectors are most specific — try them first
+    if (sel.includes("iframe") || sel.includes("frame")) {
+      high.push(sel);
+    } else {
+      normal.push(sel);
+    }
+  }
+  // Shuffle within each tier for anti-detection
+  const shuffleArray = (arr: string[]): string[] =>
+    [...arr].sort(() => Math.random() - 0.5);
+  return [shuffleArray(high), shuffleArray(normal)];
+}
+
+async function tryClickSelector(
+  page: Page,
+  selector: string,
+  index: number,
+  options: ClickBehaviorOptions,
+  attempt: number,
+): Promise<boolean> {
+  const locator = page.locator(selector);
+  const target = locator.nth(index);
+
+  if (await clickLocatorBox(page, target, options, attempt).catch(() => false)) {
+    return true;
+  }
+
+  const element = await target
+    .elementHandle({ timeout: 800 })
+    .catch(() => null);
+
+  if (element) {
+    try {
+      return await clickElementOrParentBox(
+        page,
+        element as ElementHandle<Element>,
+        options,
+        attempt,
+      ).catch(() => false);
+    } finally {
+      await element.dispose().catch(() => undefined);
+    }
+  }
+
+  return false;
+}
+
 async function clickTurnstileLocators(
   page: Page,
   selectors: string[],
   maxCandidatesPerSelector: number,
   options: ClickBehaviorOptions,
+  attempt = 0,
 ): Promise<boolean> {
-  // shuffle selector order so scan pattern isn't deterministic
-  const shuffled = [...selectors].sort(() => Math.random() - 0.5);
+  const [highPriority, normalPriority] = buildSelectorTiers(selectors);
 
-  for (const selector of shuffled) {
-    if (isOptionalResponseSelector(selector)) continue;
+  // Try high-priority (iframe) selectors first — they're most specific
+  for (const selector of highPriority) {
+    const count = await page.locator(selector).count().catch(() => 0);
+    for (let i = 0; i < Math.min(count, maxCandidatesPerSelector); i++) {
+      if (await tryClickSelector(page, selector, i, options, attempt)) return true;
+    }
+  }
 
-    const locator = page.locator(selector);
-    const count = await locator.count().catch(() => 0);
+  // Then try normal-priority selectors
+  for (const selector of normalPriority) {
+    const count = await page.locator(selector).count().catch(() => 0);
+    // Batch count() for many candidates
+    const limit = Math.min(count, maxCandidatesPerSelector);
+    if (limit === 0) continue;
 
-    for (
-      let index = 0;
-      index < Math.min(count, maxCandidatesPerSelector);
-      index++
-    ) {
-      const target = locator.nth(index);
-
-      if (await clickLocatorBox(page, target, options).catch(() => false)) {
-        return true;
-      }
-
-      const element = await target
-        .elementHandle({ timeout: 1000 })
-        .catch(() => null);
-
-      if (element) {
-        try {
-          if (
-            await clickElementOrParentBox(
-              page,
-              element as ElementHandle<Element>,
-              options,
-            ).catch(() => false)
-          ) {
-            return true;
-          }
-        } finally {
-          await element.dispose().catch(() => undefined);
-        }
-      }
+    for (let i = 0; i < limit; i++) {
+      if (await tryClickSelector(page, selector, i, options, attempt)) return true;
     }
   }
 
@@ -559,6 +824,10 @@ async function hasTurnstileLocators(
 }
 
 async function hasTurnstileFallback(page: Page): Promise<boolean> {
+  // Fast check: look for empty 300px-wide Turnstile widget divs
+  const checkboxes = await findTurnstileCheckboxes(page).catch(() => []);
+  if (checkboxes.length > 0) return true;
+
   for (const selector of FALLBACK_SELECTORS) {
     const locator = page.locator(selector);
     const count = Math.min(
@@ -602,6 +871,7 @@ async function isManagedChallengePage(page: Page): Promise<boolean> {
 async function clickTurnstileFallback(
   page: Page,
   options: ClickBehaviorOptions,
+  attempt = 0,
 ): Promise<boolean> {
   const candidates: BoundingBox[] = [];
 
@@ -635,7 +905,7 @@ async function clickTurnstileFallback(
   });
 
   for (const box of candidates) {
-    if (await clickBox(page, box, options).catch(() => false)) return true;
+    if (await clickBox(page, box, options, attempt).catch(() => false)) return true;
   }
 
   return false;
@@ -1025,15 +1295,17 @@ export async function getCloudflareData(
 ): Promise<CloudflareData> {
   const { timeoutMs = 7000, page, context = options.page?.context() } = options;
 
-  // Wait indefinitely until it's solved (lightweight polling)
+  // Wait until solved (with generous timeout to avoid infinite hang)
   let solved = await isTurnstileSolved(options);
-  while (!solved) {
+  const solveStart = Date.now();
+  const SOLVE_TIMEOUT = 120000; // 2min max wait for initial solve
+  while (!solved && Date.now() - solveStart < SOLVE_TIMEOUT) {
     if (page) await page.waitForTimeout(500).catch(() => undefined);
     else await new Promise((r) => setTimeout(r, 500));
     solved = await isTurnstileSolved(options);
   }
 
-  // Start 7s timeout to ensure cookies are fully set before snapshotting
+  // Start timeout to ensure cookies are fully set before snapshotting
   const start = Date.now();
   let hasClearance = false;
   while (Date.now() - start < timeoutMs) {
@@ -1071,18 +1343,28 @@ export async function getCloudflareData(
 export async function isCloudflareManagedChallenge({
   page,
 }: IsCloudflareManagedChallengeOptions): Promise<boolean> {
+  // Also check if just resolved via cookie
+  const cookies = await page.context().cookies().catch(() => []);
+  const hasClearance = cookies.some((c) => c.name === "cf_clearance");
+  if (hasClearance) return false;
+
   return isManagedChallengePage(page);
 }
 
-async function solveTurnstileOnce({
-  page,
-  selectors = DEFAULT_TURNSTILE_SELECTORS,
-  maxCandidatesPerSelector = 5,
-  foreground = DEFAULT_CLICK_BEHAVIOR.foreground,
-  clickDelayMs = DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
-  mouseMoveSteps = DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
-  waitAfterClickMs = DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
-}: CheckTurnstileOptions): Promise<SolveTurnstileResult> {
+async function solveTurnstileOnce(
+  options: CheckTurnstileOptions & { attempt?: number },
+): Promise<SolveTurnstileResult> {
+  const {
+    page,
+    selectors = DEFAULT_TURNSTILE_SELECTORS,
+    maxCandidatesPerSelector = 5,
+    foreground = DEFAULT_CLICK_BEHAVIOR.foreground,
+    clickDelayMs = DEFAULT_CLICK_BEHAVIOR.clickDelayMs,
+    mouseMoveSteps = DEFAULT_CLICK_BEHAVIOR.mouseMoveSteps,
+    waitAfterClickMs = DEFAULT_CLICK_BEHAVIOR.waitAfterClickMs,
+    attempt = 0,
+  } = options;
+
   const clickOptions = clickOptionsFromCheckOptions({
     foreground,
     clickDelayMs,
@@ -1098,19 +1380,42 @@ async function solveTurnstileOnce({
     return { clicked: false, status: "managed-challenge" };
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  // Strategy 1: Parent of [name="cf-turnstile-response"]
+  // Fastest path — if the hidden input exists, its parent is the checkbox.
+  // Click at x+30 (precise checkbox position, proven by puppeteer-real-browser).
+  // ═══════════════════════════════════════════════════════════════════
+  if (await clickParentOfTurnstileResponse(page, clickOptions).catch(() => false)) {
+    return verifyClickSolved(page);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Strategy 2: Empty 300px div detection (reference approach)
+  // ═══════════════════════════════════════════════════════════════════
+  if (await clickTurnstileCheckboxesByDiv(page, clickOptions).catch(() => false)) {
+    return verifyClickSolved(page);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Strategy 3: Selector-based — iframes, locators, element scanning
+  // ═══════════════════════════════════════════════════════════════════
   if (
     await clickTurnstileLocators(
       page,
       selectors,
       maxCandidatesPerSelector,
       clickOptions,
+      attempt,
     )
   ) {
-    return { clicked: true, status: "clicked" };
+    return verifyClickSolved(page);
   }
 
-  if (await clickTurnstileFallback(page, clickOptions)) {
-    return { clicked: true, status: "clicked" };
+  // ═══════════════════════════════════════════════════════════════════
+  // Strategy 4: Generic fallback — size-matching divs, buttons, iframes
+  // ═══════════════════════════════════════════════════════════════════
+  if (await clickTurnstileFallback(page, clickOptions, attempt)) {
+    return verifyClickSolved(page);
   }
 
   return { clicked: false, status: "not-found" };
@@ -1198,6 +1503,115 @@ async function installPageChangeSignals(
   return disposable;
 }
 
+// ── CDP Network Monitors ───────────────────────────────────────────────
+// These provide faster-than-polling detection by watching CDP events.
+
+type CDPMonitor = {
+  dispose: () => void;
+  /** Resolves when cf_clearance cookie is detected via network response */
+  clearancePromise: Promise<void>;
+};
+
+function setupChallengeCDPMonitor(page: Page): CDPMonitor {
+  let resolve: (() => void) | undefined;
+  const clearancePromise = new Promise<void>((r) => { resolve = r; });
+  let cdpSession: CDPSession | undefined;
+  let disposed = false;
+
+  // Store handler references for proper cleanup
+  let onResponseReceived: ((params: {
+    response?: { headers?: Record<string, string> };
+  }) => void) | undefined;
+
+  const getCDP = async (): Promise<CDPSession | undefined> => {
+    try {
+      const session = await (page.context() as any).newCDPSession(page).catch(() => undefined);
+      return session as CDPSession | undefined;
+    } catch { return undefined; }
+  };
+
+  // Initialize CDP session asynchronously
+  getCDP().then((session) => {
+    if (disposed || !session) return;
+    cdpSession = session;
+
+    // Listen for Set-Cookie headers that contain cf_clearance
+    onResponseReceived = (params) => {
+      if (disposed) return;
+      const headers = params.response?.headers;
+      if (!headers) return;
+      for (const [key, value] of Object.entries(headers)) {
+        if (key.toLowerCase() === "set-cookie" && value.includes("cf_clearance")) {
+          resolve?.();
+          return;
+        }
+        if (key.toLowerCase() === "set-cookie" && /cf_clearance=([^;]+)/i.test(value)) {
+          resolve?.();
+          return;
+        }
+      }
+    };
+
+    session.on("Network.responseReceived", onResponseReceived);
+    session.send("Network.enable").catch(() => undefined);
+  }).catch(() => undefined);
+
+  return {
+    dispose: () => {
+      disposed = true;
+      if (cdpSession && onResponseReceived) {
+        cdpSession.off("Network.responseReceived", onResponseReceived);
+      }
+      if (cdpSession) {
+        cdpSession.detach().catch(() => undefined);
+      }
+    },
+    clearancePromise,
+  };
+}
+
+function setupTurnstileNetworkDetector(
+  page: Page,
+  onDetected: (url: string) => void,
+): () => void {
+  let cdpSession: CDPSession | undefined;
+  let disposed = false;
+
+  const getCDP = async (): Promise<CDPSession | undefined> => {
+    try {
+      const session = await (page.context() as any).newCDPSession(page).catch(() => undefined);
+      return session as CDPSession | undefined;
+    } catch { return undefined; }
+  };
+
+  getCDP().then((session) => {
+    if (disposed || !session) return;
+    cdpSession = session;
+
+    const onRequestWillBeSent = (params: { request?: { url?: string } }) => {
+      if (disposed) return;
+      const url = params.request?.url ?? "";
+      if (
+        url.includes("challenges.cloudflare.com") ||
+        url.includes("/turnstile/") ||
+        url.includes("cf-turnstile")
+      ) {
+        onDetected(url);
+      }
+    };
+
+    session.on("Network.requestWillBeSent", onRequestWillBeSent);
+    session.send("Network.enable").catch(() => undefined);
+  });
+
+  return () => {
+    disposed = true;
+    if (cdpSession) {
+      cdpSession.detach().catch(() => undefined);
+    }
+  };
+}
+
 function watchTurnstilePage(
   page: Page,
   options: NormalizedTurnstileOptions,
@@ -1252,24 +1666,115 @@ function watchTurnstilePage(
         clickDelayMs: options.clickDelayMs,
         mouseMoveSteps: options.mouseMoveSteps,
         waitAfterClickMs: options.waitAfterClickMs,
+        attempt: clickAttempts,
       });
 
       if (result.status === "managed-challenge") {
         clickAttempts = 0;
-        nextClickAt = Date.now() + Math.max(options.intervalMs, 5000);
+        nextClickAt = Date.now() + Math.max(options.intervalMs, 15000);
 
         if (Date.now() - lastManagedChallengeLogAt > 30000) {
           lastManagedChallengeLogAt = Date.now();
           options.logger?.(
-            "cloudflare managed challenge detected; turnstile clicker paused",
+            "cloudflare managed challenge detected; waiting for auto-resolution...",
           );
+        }
+
+        // Actively wait for managed challenge to resolve.
+        // Uses CDP network monitor + poll for fastest detection.
+        try {
+          const cdpMonitor = setupChallengeCDPMonitor(page);
+          const contextForCookies = page.context();
+          const pollStart = Date.now();
+          const maxWait = 45000; // 45s max wait
+
+          for (let i = 0; i < 90; i++) {
+            if (closed || page.isClosed()) { cdpMonitor.dispose(); return; }
+
+            // Race between CDP event and polling — whichever fires first wins
+            const cdpReady = Promise.race([
+              cdpMonitor.clearancePromise.then(() => true),
+              new Promise<boolean>((r) => setTimeout(() => r(false), 200)),
+            ]);
+
+            if (await cdpReady) {
+              // Double-check via cookies to be sure
+              const cookies = await contextForCookies.cookies().catch(() => []);
+              if (cookies.some((c) => c.name === "cf_clearance")) {
+                options.logger?.("cf_clearance detected via CDP — challenge resolved");
+                cdpMonitor.dispose();
+                nextClickAt = 0;
+                return;
+              }
+            }
+
+            // Check 1: cf_clearance cookie appeared (standard poll)
+            const cookies = await contextForCookies.cookies().catch(() => []);
+            const hasClearance = cookies.some((c) => c.name === "cf_clearance");
+            if (hasClearance) {
+              options.logger?.("cf_clearance cookie found — challenge resolved");
+              cdpMonitor.dispose();
+              nextClickAt = 0;
+              return;
+            }
+
+            // Check 2: Page URL/title changed from challenge page
+            const url = page.url();
+            const title = await page.title().catch(() => "");
+            if (
+              !/just a moment|performing security|checking your browser/i.test(title) &&
+              !/challenge-platform/i.test(url)
+            ) {
+              options.logger?.("page changed from challenge — resuming");
+              cdpMonitor.dispose();
+              nextClickAt = 0;
+              return;
+            }
+
+            // Check 3: DOM check for Turnstile widgets appearing after challenge
+            const hasCfWidgets = await page
+              .evaluate(() => {
+                const hasIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+                const hasTurnstile = document.querySelector(".cf-turnstile, [data-sitekey]");
+                const tokenFields = document.querySelectorAll(
+                  '[name="cf-turnstile-response"], [name="turnstile-response"]',
+                );
+                return Boolean(hasIframe || hasTurnstile || tokenFields.length > 0);
+              })
+              .catch(() => false);
+            if (hasCfWidgets) {
+              options.logger?.("turnstile elements appeared after challenge — resuming");
+              cdpMonitor.dispose();
+              nextClickAt = 0;
+              return;
+            }
+
+            // Timeout safety
+            if (Date.now() - pollStart > maxWait) {
+              options.logger?.("managed challenge wait timeout; will retry");
+              cdpMonitor.dispose();
+              nextClickAt = Date.now() + 5000;
+              return;
+            }
+
+            await page.waitForTimeout(600).catch(() => undefined);
+          }
+          cdpMonitor.dispose();
+        } catch {
+          // fall through — interval will pick it up next cycle
         }
 
         return;
       }
 
-      if (result.status === "solved" || result.status === "not-found") {
+      if (result.status === "solved") {
         clickAttempts = 0;
+        nextClickAt = 0;
+        return;
+      }
+
+      if (result.status === "not-found") {
+        // Don't reset attempts on not-found to allow strategy on next check
         nextClickAt = 0;
         return;
       }
@@ -1277,14 +1782,17 @@ function watchTurnstilePage(
       if (result.clicked) {
         clickAttempts++;
 
-        const cooldown = Math.min(
+        // Exponential backoff with jitter
+        const baseCooldown = Math.min(
           options.maxClickCooldownMs,
           options.clickCooldownMs * Math.min(clickAttempts, 6),
         );
+        const jitter = 0.75 + Math.random() * 0.5; // ±25% jitter
+        const cooldown = Math.round(baseCooldown * jitter);
 
         nextClickAt = Date.now() + cooldown;
         options.logger?.(
-          `turnstile candidate clicked; next retry in ${cooldown}ms`,
+          `turnstile candidate clicked (attempt #${clickAttempts}); next retry in ${cooldown}ms`,
         );
       }
     } catch (error) {
