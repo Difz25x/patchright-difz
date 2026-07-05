@@ -88,7 +88,6 @@ function generateControlPoints(start, end) {
     const dir = sub(end, start);
     const spread = clamp(len * 0.35, 5, 220);
     const perpDir = perp(unit(dir));
-    // asymmetric — each control point picks its own side independently
     const side1 = Math.random() < 0.5 ? 1 : -1;
     const side2 = Math.random() < 0.35 ? -side1 : side1;
     const t1 = randBetween(0.15, 0.45);
@@ -151,7 +150,6 @@ function generateSpatialPath(start, end, options) {
     const jitter = options?.jitter ?? DEFAULT_JITTER;
     const windStrength = options?.windStrength ?? DEFAULT_WIND_STRENGTH;
     const totalMs = fittsTime(len, 80, speed);
-    // variable velocity — multiply speed slightly along the path
     const speedVariation = 1 + gaussianRandom(0, 0.08);
     const steps = clamp(Math.ceil((totalMs * speedVariation) / 8), 8, 250);
     const [ctrl1, ctrl2] = generateControlPoints(start, end);
@@ -172,7 +170,6 @@ function stampPath(points, totalMs) {
     const now = Date.now();
     if (n === 1)
         return [{ ...points[0], timestamp: now }];
-    // inject 0-2 micro-pauses at random positions to simulate human hesitation
     const pauseCount = Math.random() < 0.4 ? 0 : Math.random() < 0.7 ? 1 : 2;
     const pauseIndices = new Set();
     for (let p = 0; p < pauseCount; p++) {
@@ -445,7 +442,6 @@ export function createCursor(page, start = {
     };
     const mouseButtonAction = async (action, options) => {
         const cdp = await getCdp();
-        // sub-pixel offset so click coords aren't snapped to integer grid
         const subX = location.x + gaussianRandom(0, 0.3);
         const subY = location.y + gaussianRandom(0, 0.3);
         try {

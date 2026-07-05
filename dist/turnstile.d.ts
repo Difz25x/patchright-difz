@@ -104,14 +104,7 @@ export type CloudflareData = {
         session: CloudflareStorageEntry[];
     };
 };
-/**
- * Identifier for a Turnstile widget on the page.
- * Generated from sitekey + DOM path to uniquely identify each widget.
- */
 export type TurnstileWidgetId = string;
-/**
- * Info about a detected Turnstile widget.
- */
 export type TurnstileWidgetInfo = {
     widgetId: TurnstileWidgetId;
     sitekey?: string;
@@ -119,11 +112,6 @@ export type TurnstileWidgetInfo = {
 };
 export declare function hasTurnstile({ page, selectors, maxCandidatesPerSelector, includeFallback, }: HasTurnstileOptions): Promise<boolean>;
 export declare function isTurnstileSolved({ page, context, urls, minTokenLength, }: IsTurnstileSolvedOptions): Promise<boolean>;
-/**
- * Count how many valid Turnstile tokens are currently in the DOM.
- * Useful for multi-widget pages: each widget produces one token, so
- * counting tokens reveals how many widgets have been solved so far.
- */
 export declare function countTurnstileTokens(page: Page, minTokenLength?: number): Promise<number>;
 export declare function _getCloudflareDataRaw({ page, context, urls, minTokenLength, }: CloudflareDataOptions): Promise<CloudflareData>;
 export declare function getCloudflareData(options: CloudflareDataOptions): Promise<CloudflareData>;
